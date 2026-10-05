@@ -24,10 +24,18 @@ A) Houdini の Python Shell から(推奨)
        import sys; sys.path.append(r"<このファイルのあるフォルダ>")
        import amalfi_layers; amalfi_layers.install()
    → /obj/amalfi_layers の中に Python SOP が作られ、パラメータ付きで生成される。
+     SOP の中身はこのファイルを読み込む数行のローダーだけ。
 
 B) 手動
-   Geometry ノードの中に Python SOP を作り、Python Code 欄にこのファイルの
-   中身を丸ごと貼り付ける(パラメータが無い場合は DEFAULTS が使われる)。
+   Geometry ノードの中に Python SOP を作り、Python Code 欄の既存コードを
+   全部消して、次の数行だけを貼る(パラメータが無い場合は DEFAULTS を使う)。
+       import sys, importlib
+       folder = r"<このファイルのあるフォルダ>"
+       if folder not in sys.path:
+           sys.path.append(folder)
+       import amalfi_layers
+       importlib.reload(amalfi_layers)
+       amalfi_layers.cook_python_sop()
 
 C) Houdini なしで確認
        python amalfi_layers.py --seed 7 --obj out.obj
@@ -706,15 +714,23 @@ def cook_python_sop():
     write_houdini(node.geometry(), town.to_mesh(), town)
 
 
+# Python SOP に入れる短いローダー(長いコードを貼ると字下げが崩れやすいため)
+LOADER_CODE = """import sys, importlib
+folder = r"%s"
+if folder not in sys.path:
+    sys.path.append(folder)
+import amalfi_layers
+importlib.reload(amalfi_layers)
+amalfi_layers.cook_python_sop()
+"""
+
+
 def install(parent_path="/obj", name="amalfi_layers"):
     """Python Shell から呼ぶと、パラメータ付きの Python SOP を作る。"""
     import hou
 
-    src = os.path.abspath(__file__)
-    if src.endswith(".pyc"):
-        src = src[:-1]
-    with open(src, "r", encoding="utf-8") as f:
-        code = f.read()
+    folder_path = os.path.dirname(os.path.abspath(__file__)).replace("\\", "/")
+    code = LOADER_CODE % folder_path
 
     parent = hou.node(parent_path)
     geo = parent.createNode("geo", name)
@@ -747,7 +763,8 @@ def _in_python_sop():
         return False
 
 
-if _in_python_sop():
+if __name__ != "amalfi_layers" and _in_python_sop():
+    # コードを Python SOP に直接貼り付けた場合(import された場合は呼び出し側が cook する)
     cook_python_sop()
 elif __name__ == "__main__":
     import argparse
