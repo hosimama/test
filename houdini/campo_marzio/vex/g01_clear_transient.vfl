@@ -1,0 +1,14 @@
+// =====================================================================
+// G01_CLEAR_TRANSIENT           (subnet: ITERATION_CONTROLLER, ループ内先頭)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : foreach_begin (Fetch Feedback)
+// ---------------------------------------------------------------------
+// 前回の反復でデバッグ用に状態へ合流させた残余ポリゴン・候補点を消し、
+// 状態を domain + building だけに戻す。
+// =====================================================================
+for (int p = 0; p < nprimitives(0); p++) {
+    string c = prim(0, "class", p);
+    if (c != "domain" && c != "building") removeprim(0, p, 1);
+}
+int pts[] = expandpointgroup(0, "candidate");
+foreach (int pt; pts) removepoint(0, pt);

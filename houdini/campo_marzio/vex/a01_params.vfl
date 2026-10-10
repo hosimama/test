@@ -1,0 +1,88 @@
+// =====================================================================
+// A01_PARAMS                    (subnet: INPUT_DOMAIN)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : HDA input 0 (domain polygon, may be empty)
+// ---------------------------------------------------------------------
+// HDA の公開パラメータをすべて cfg_* detail 属性に書き出す。
+// 以降のノード(ループ内を含む)は ch() を使わず、この cfg_* だけを読む。
+// こうしておくと、サブネットの深さに関係なくパラメータを参照できる。
+//
+// このノードは  <HDA>/INPUT_DOMAIN/A01_PARAMS  に置くこと。
+// "../../" が HDA(またはテスト用サブネット)を指す。
+// =====================================================================
+
+string H = "../../";
+
+// ---- Domain ----------------------------------------------------------
+i@cfg_domain_mode           = chi(H + "domain_mode");          // 0=Input Polygon, 1=Rectangle
+f@cfg_domain_width          = chf(H + "domain_width");
+f@cfg_domain_height         = chf(H + "domain_height");
+f@cfg_target_fill_ratio     = chf(H + "target_fill_ratio");
+f@cfg_minimum_building_area = chf(H + "minimum_building_area");
+i@cfg_initial_layout_mode   = chi(H + "initial_layout_mode");  // 0=None 1=Manual 2=Voronoi(未実装) 3=Boundary(未実装)
+
+// ---- Shape -----------------------------------------------------------
+s@cfg_shape_weights         = chs(H + "shape_weights");        // Phase 1 では rectangle(0) 以外は無視
+f@cfg_base_size             = chf(H + "base_size");
+f@cfg_min_scale             = chf(H + "min_scale");
+f@cfg_max_scale             = chf(H + "max_scale");
+f@cfg_max_aspect            = chf(H + "max_aspect");
+i@cfg_aspect_sample_count   = chi(H + "aspect_sample_count");
+f@cfg_shape_variety         = chf(H + "shape_variety");        // Phase 2 用 (予約)
+i@cfg_symmetry_mode         = chi(H + "symmetry_mode");        // Phase 2 用 (予約)
+
+// ---- Search ----------------------------------------------------------
+f@cfg_angle_step             = chf(H + "angle_step");
+i@cfg_position_sample_count  = chi(H + "position_sample_count");
+i@cfg_min_samples_per_region = chi(H + "min_samples_per_region");
+i@cfg_scale_sample_count     = chi(H + "scale_sample_count");
+i@cfg_snap_to_boundary       = chi(H + "snap_to_boundary");
+i@cfg_max_candidates         = chi(H + "max_candidates");
+i@cfg_max_iterations         = chi(H + "max_iterations");
+i@cfg_random_seed            = chi(H + "random_seed");
+
+// ---- Placement constraints ------------------------------------------
+f@cfg_clearance          = chf(H + "clearance");
+f@cfg_contact_tolerance  = chf(H + "contact_tolerance");
+f@cfg_min_passage_width  = chf(H + "min_passage_width");
+f@cfg_max_sliver_ratio   = chf(H + "max_sliver_ratio");
+i@cfg_perimeter_samples  = chi(H + "perimeter_samples");
+
+// ---- Evaluation ------------------------------------------------------
+f@cfg_weight_fill    = chf(H + "weight_fill");
+f@cfg_weight_fit     = chf(H + "weight_fit");
+f@cfg_weight_access  = chf(H + "weight_access");
+f@cfg_weight_variety = chf(H + "weight_variety");
+f@cfg_weight_axis    = chf(H + "weight_axis");
+i@cfg_variety_window = chi(H + "variety_window");
+f@cfg_axis_radius    = chf(H + "axis_radius");
+
+// ---- Termination -----------------------------------------------------
+f@cfg_minimum_residual_area  = chf(H + "minimum_residual_area");
+f@cfg_minimum_improvement    = chf(H + "minimum_improvement");
+i@cfg_stop_when_no_candidate = chi(H + "stop_when_no_candidate");
+
+// ---- Debug -----------------------------------------------------------
+i@cfg_debug_mode               = chi(H + "debug_mode");
+i@cfg_show_candidates          = chi(H + "show_candidates");
+i@cfg_show_rejected_candidates = chi(H + "show_rejected_candidates");
+i@cfg_show_residual_ids        = chi(H + "show_residual_ids");
+i@cfg_debug_top_k              = chi(H + "debug_top_k");
+i@cfg_keep_debug_in_loop       = chi(H + "keep_debug_in_loop");
+
+// ---- 簡単な整合性チェック ---------------------------------------------
+float wsum = f@cfg_weight_fill + f@cfg_weight_fit + f@cfg_weight_access
+           + f@cfg_weight_variety + f@cfg_weight_axis;
+f@cfg_weight_sum = wsum;
+if (abs(wsum - 1.0) > 1e-3)
+    warning("weights の合計が %g です(1 であるべき)。スコア計算時に合計で正規化します。", wsum);
+if (wsum <= 0.0)
+    error("weights の合計が 0 以下です。");
+if (f@cfg_min_scale <= 0.0 || f@cfg_max_scale < f@cfg_min_scale)
+    error("min_scale / max_scale が不正です (0 < min_scale <= max_scale)。");
+if (f@cfg_angle_step <= 0.0)
+    error("angle_step は正の値にしてください。");
+if (f@cfg_base_size <= 0.0)
+    error("base_size は正の値にしてください。");
+if (f@cfg_max_aspect < 1.0)
+    error("max_aspect は 1 以上にしてください。");

@@ -1,0 +1,16 @@
+// =====================================================================
+// G03_RESIDUAL_FLAG             (subnet: ITERATION_CONTROLLER, デバッグ用)
+// Attribute Wrangle  /  Run Over: Primitives
+// Input 0 : 残余空間ポリゴン (この反復の配置前)
+// Input 1 : G02_SELECT_PLACE
+// ---------------------------------------------------------------------
+// この反復で各残余領域に有効候補がいくつあったかを記録する。
+//   i@valid_candidates  有効候補数
+//   i@unfilled          1 = 面積不足で除外 or 有効候補なし (= 未充填として記録)
+//   i@placed_here       1 = この反復の建築はこの領域に置かれた
+// =====================================================================
+int vc[] = detail(1, "region_valid_count");
+int r = i@residual_id;
+i@valid_candidates = (r >= 0 && r < len(vc)) ? vc[r] : 0;
+i@unfilled         = (i@ignored == 1 || i@valid_candidates == 0) ? 1 : 0;
+i@placed_here      = (detail(1, "placed_residual_id", 0) == r) ? 1 : 0;

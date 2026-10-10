@@ -1,0 +1,63 @@
+// =====================================================================
+// G04_TERMINATION               (subnet: ITERATION_CONTROLLER)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : G02_SELECT_PLACE (配置後の状態)
+// Input 1 : 残余空間ポリゴン (この反復の配置前, 統計付き)
+// ---------------------------------------------------------------------
+// 充填率などを更新し、終了条件を判定して i@stop / s@stop_reason を設定する。
+// 判定の優先順:
+//   no_candidate      有効候補なし (stop_when_no_candidate=1 のとき)
+//   target_fill       充填率 >= target_fill_ratio
+//   min_residual_area 最大残余面積 < minimum_residual_area
+//   min_improvement   今回の充填率の改善 < minimum_improvement
+//   max_iterations    iter >= max_iterations
+// stop=1 になった後の反復は、ループ内の STOP_SWITCH が入力をそのまま
+// 通過させるので、状態は変化しない。
+//
+// 注意: max_residual_area はこの反復の「配置前」の残余から計算する。
+//       (配置後の値は次の反復または H の最終残余抽出で確定する)
+// =====================================================================
+
+int iter = i@iter + 1;
+i@iter = iter;
+
+float domA = max(f@domain_area, 1e-12);
+float built = 0.0;
+int blds[] = expandprimgroup(0, "building");
+foreach (int p; blds) built += primintrinsic(0, "measuredarea", p);
+
+float prev = f@fill_ratio;
+float fill = built / domA;
+float maxres = detail(1, "max_residual_area", 0);
+
+f@built_area        = built;
+f@fill_ratio        = fill;
+f@improvement       = fill - prev;
+f@unfilled_area     = domA - built;
+f@max_residual_area = maxres;
+i@building_count    = len(blds);
+
+// 履歴
+int   hb[] = i[]@hist_building_id;   append(hb, i@placed ? i@placed_building_id : -1);
+float hs[] = f[]@hist_score;         append(hs, f@last_score);
+int   hc[] = i[]@hist_n_candidates;  append(hc, i@n_candidates);
+int   hv[] = i[]@hist_n_valid;       append(hv, i@n_valid);
+float hf[] = f[]@hist_fill_ratio;    append(hf, fill);
+float hm[] = f[]@hist_max_residual;  append(hm, maxres);
+i[]@hist_building_id  = hb;
+f[]@hist_score        = hs;
+i[]@hist_n_candidates = hc;
+i[]@hist_n_valid      = hv;
+f[]@hist_fill_ratio   = hf;
+f[]@hist_max_residual = hm;
+
+// 終了判定
+string reason = "";
+if (!i@placed && i@cfg_stop_when_no_candidate)              reason = "no_candidate";
+else if (fill >= f@cfg_target_fill_ratio)                    reason = "target_fill";
+else if (maxres < f@cfg_minimum_residual_area)               reason = "min_residual_area";
+else if (i@placed && (fill - prev) < f@cfg_minimum_improvement) reason = "min_improvement";
+else if (iter >= i@cfg_max_iterations)                       reason = "max_iterations";
+
+i@stop        = (reason != "") ? 1 : 0;
+s@stop_reason = reason;

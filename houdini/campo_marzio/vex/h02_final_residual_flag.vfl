@@ -1,0 +1,20 @@
+// =====================================================================
+// H02_FINAL_RESIDUAL_FLAG       (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Primitives
+// Input 0 : 最終残余空間 (RESIDUAL_EXTRACT output 0)
+// Input 1 : H01_FINAL_STATS
+// ---------------------------------------------------------------------
+// 最終的な残余空間はすべて「未充填」。その理由を分類して記録する。
+//   i@unfilled = 1
+//   i@unfilled_class
+//     0 too_small     : 面積 < minimum_building_area (建築が入らない)
+//     1 no_candidate  : ループが「有効候補なし」で終了した
+//     2 remaining     : 他の終了条件で止まった (まだ配置余地がありうる)
+//   s@unfilled_reason
+// 通行可能かどうかはここでは確定しない (Path Explorer 側で判定)。
+// =====================================================================
+string why = detail(1, "final_stop_reason", 0);
+i@unfilled = 1;
+if (i@ignored == 1)            { i@unfilled_class = 0; s@unfilled_reason = "too_small"; }
+else if (why == "no_candidate") { i@unfilled_class = 1; s@unfilled_reason = "no_candidate"; }
+else                            { i@unfilled_class = 2; s@unfilled_reason = "remaining"; }

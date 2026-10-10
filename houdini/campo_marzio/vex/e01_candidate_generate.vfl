@@ -1,0 +1,183 @@
+// =====================================================================
+// E01_CANDIDATE_GENERATE        (subnet: CANDIDATE_PLACEMENT)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : 残余空間ポリゴン (RESIDUAL_EXTRACT output 0, 統計付き)
+// Input 1 : 残余空間の境界線分 (RESIDUAL_EXTRACT output 1)
+// Input 2 : 状態ジオメトリ (cfg_*, iter)
+// ---------------------------------------------------------------------
+// 残余空間ごとに位置サンプルを取り、各サンプルについて
+//   (a) 回転角 0..180 を angle_step 刻み x スケール x 縦横比
+//   (b) snap_to_boundary=1 のとき、最寄りの境界線分に沿わせて接触させた候補
+// を「点」として生成する (形状は E02/F01 で解析的に扱う)。
+//
+// 位置サンプル数は残余面積に比例 (合計 position_sample_count)、ただし
+// 各領域で最低 min_samples_per_region。領域の重心が領域内にあれば
+// 重心も 1 サンプルとして加える。
+// サンプリングは rand(seed, iter, region, try) による決定的な棄却法なので、
+// 同じ random_seed なら結果は再現する。
+//
+// Phase 1: shape_type は 0 (Rectangle) のみ。
+//   width  = base_size * scale * sqrt(aspect)   (ローカル X = theta 方向)
+//   depth  = base_size * scale / sqrt(aspect)   (ローカル Y)
+//
+// 出力点属性:
+//   P (図形中心), f@theta (度), f@width, f@depth, f@scale, f@aspect,
+//   i@shape_type, i@residual_id, f@region_area, i@sample_id, i@snapped,
+//   i@cand_id, i@reject_code(-1=未判定), s@reject_reason, f@score
+//   group "candidate"
+// =====================================================================
+
+int in_region(vector p; int r; float tol) {
+    int pr; vector uv;
+    float d = xyzdist(0, p, pr, uv);
+    return (pr >= 0 && d <= tol && prim(0, "residual_id", pr) == r);
+}
+
+// ---- cfg -------------------------------------------------------------
+int   seed      = detail(2, "cfg_random_seed", 0);
+int   iter      = detail(2, "iter", 0);
+float base      = detail(2, "cfg_base_size", 0);
+float smin      = detail(2, "cfg_min_scale", 0);
+float smax      = detail(2, "cfg_max_scale", 0);
+float amax      = detail(2, "cfg_max_aspect", 0);
+int   na        = max(1, detail(2, "cfg_aspect_sample_count", 0));
+int   ns        = max(1, detail(2, "cfg_scale_sample_count", 0));
+float astep     = detail(2, "cfg_angle_step", 0);
+int   nsamp     = max(1, detail(2, "cfg_position_sample_count", 0));
+int   minper    = max(1, detail(2, "cfg_min_samples_per_region", 0));
+int   dosnap    = detail(2, "cfg_snap_to_boundary", 0);
+int   maxc      = max(1, detail(2, "cfg_max_candidates", 0));
+float clearance = detail(2, "cfg_clearance", 0);
+float tol       = 1e-4 * base;
+
+// ---- 自身を空にする (入力 0 の読み出しには影響しない) -----------------
+for (int p = 0; p < nprimitives(0); p++) removeprim(0, p, 0);
+for (int i = 0; i < npoints(0); i++)     removepoint(0, i);
+
+addpointattrib(0, "theta", 0.0);
+addpointattrib(0, "width", 0.0);
+addpointattrib(0, "depth", 0.0);
+addpointattrib(0, "scale", 0.0);
+addpointattrib(0, "aspect", 1.0);
+addpointattrib(0, "shape_type", 0);
+addpointattrib(0, "residual_id", -1);
+addpointattrib(0, "region_area", 0.0);
+addpointattrib(0, "sample_id", -1);
+addpointattrib(0, "snapped", 0);
+addpointattrib(0, "cand_id", -1);
+addpointattrib(0, "reject_code", -1);
+addpointattrib(0, "reject_reason", "");
+addpointattrib(0, "score", -1.0);
+
+// ---- 領域情報 ----------------------------------------------------------
+int nreg = detail(0, "residual_count", 0);
+float  rarea[]; vector rbmin[], rbmax[], rcen[]; int rign[];
+resize(rarea, nreg); resize(rbmin, nreg); resize(rbmax, nreg); resize(rcen, nreg); resize(rign, nreg);
+for (int r = 0; r < nreg; r++) rign[r] = 1;
+for (int p = 0; p < nprimitives(0); p++) {
+    int r = prim(0, "residual_id", p);
+    if (r < 0 || r >= nreg) continue;
+    rarea[r] = prim(0, "region_area", p);
+    rbmin[r] = prim(0, "region_bbmin", p);
+    rbmax[r] = prim(0, "region_bbmax", p);
+    rcen[r]  = prim(0, "region_centroid", p);
+    rign[r]  = prim(0, "ignored", p);
+}
+float total = 0.0;
+for (int r = 0; r < nreg; r++) if (!rign[r]) total += rarea[r];
+
+// ---- 離散化した探索変数 -----------------------------------------------
+float scales[], aspects[], angles[];
+for (int k = 0; k < ns; k++) append(scales, (ns == 1) ? 0.5 * (smin + smax) : lerp(smin, smax, float(k) / (ns - 1)));
+for (int k = 0; k < na; k++) append(aspects, (na == 1) ? 1.0 : lerp(1.0, amax, float(k) / (na - 1)));
+int nang = max(1, int(floor((180.0 - 1e-6) / astep)) + 1);   // 0, 5, ..., 175
+for (int k = 0; k < nang; k++) append(angles, k * astep);
+
+int cid = 0, sid = 0, truncated = 0, nregs_sampled = 0;
+
+for (int r = 0; r < nreg && !truncated; r++) {
+    if (rign[r] || total <= 0.0) continue;
+    nregs_sampled++;
+
+    int nr = max(minper, int(rint(nsamp * rarea[r] / total)));
+    vector S[];
+    if (in_region(rcen[r], r, tol)) append(S, rcen[r]);
+    int tries = 0;
+    while (len(S) < nr && tries < nr * 80) {
+        vector u = rand(set(seed + 0.1234, iter * 31.0 + r * 3.71 + 0.5, tries + 0.25));
+        vector p = rbmin[r] + u * (rbmax[r] - rbmin[r]);
+        p.z = 0.0;
+        if (in_region(p, r, tol)) append(S, p);
+        tries++;
+    }
+
+    foreach (vector P; S) {
+        // (a) 角度 x スケール x 縦横比 の掃引
+        foreach (float th; angles) foreach (float s; scales) foreach (float asp; aspects) {
+            if (cid >= maxc) { truncated = 1; break; }
+            int pt = addpoint(0, P);
+            setpointattrib(0, "theta",       pt, th);
+            setpointattrib(0, "width",       pt, base * s * sqrt(asp));
+            setpointattrib(0, "depth",       pt, base * s / sqrt(asp));
+            setpointattrib(0, "scale",       pt, s);
+            setpointattrib(0, "aspect",      pt, asp);
+            setpointattrib(0, "shape_type",  pt, 0);
+            setpointattrib(0, "residual_id", pt, r);
+            setpointattrib(0, "region_area", pt, rarea[r]);
+            setpointattrib(0, "sample_id",   pt, sid);
+            setpointattrib(0, "snapped",     pt, 0);
+            setpointattrib(0, "cand_id",     pt, cid);
+            setpointgroup (0, "candidate",   pt, 1);
+            cid++;
+        }
+
+        // (b) 最寄りの境界線分に沿わせて接触させる候補
+        if (dosnap && !truncated) {
+            int sp; vector suv;
+            float sd = xyzdist(1, P, sp, suv);
+            if (sp >= 0 && sd > tol) {
+                int spts[] = primpoints(1, sp);
+                vector A = point(1, "P", spts[0]);
+                vector B = point(1, "P", spts[1]);
+                vector Q = primuv(1, "P", sp, suv);
+                vector t = normalize(B - A);
+                vector n = normalize(P - Q);
+                float th = degrees(atan2(t.y, t.x)) % 180.0;
+                if (th < 0.0) th += 180.0;
+                foreach (float s; scales) foreach (float asp; aspects) {
+                    for (int sw = 0; sw < 2; sw++) {
+                        if (cid >= maxc) { truncated = 1; break; }
+                        float w = base * s * sqrt(asp);
+                        float d = base * s / sqrt(asp);
+                        if (sw == 1) { float tmp = w; w = d; d = tmp; }
+                        // ローカル X (幅) を線分方向に、ローカル Y (奥行) を法線方向に
+                        vector c = Q + n * (0.5 * d + clearance);
+                        int pt = addpoint(0, c);
+                        setpointattrib(0, "theta",       pt, th);
+                        setpointattrib(0, "width",       pt, w);
+                        setpointattrib(0, "depth",       pt, d);
+                        setpointattrib(0, "scale",       pt, s);
+                        setpointattrib(0, "aspect",      pt, asp);
+                        setpointattrib(0, "shape_type",  pt, 0);
+                        setpointattrib(0, "residual_id", pt, r);
+                        setpointattrib(0, "region_area", pt, rarea[r]);
+                        setpointattrib(0, "sample_id",   pt, sid);
+                        setpointattrib(0, "snapped",     pt, 1);
+                        setpointattrib(0, "cand_id",     pt, cid);
+                        setpointgroup (0, "candidate",   pt, 1);
+                        cid++;
+                    }
+                }
+            }
+        }
+        sid++;
+    }
+}
+
+if (truncated)
+    warning("候補数が max_candidates=%d に達したため打ち切りました。", maxc);
+
+i@n_candidates_generated = cid;
+i@n_position_samples     = sid;
+i@n_regions_sampled      = nregs_sampled;
+i@candidates_truncated   = truncated;

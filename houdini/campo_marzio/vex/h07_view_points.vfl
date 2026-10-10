@@ -1,0 +1,48 @@
+// =====================================================================
+// H07_VIEW_POINTS               (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Points
+// Input 0 : H06_VIEW_PRIMS
+// Input 1 : H01_FINAL_STATS (cfg_* 参照用)
+// ---------------------------------------------------------------------
+// 候補点 (group "candidate") の色と表示/非表示、Z 方向の重なり回避。
+//   Candidates (mode 2) : reject_code ごとの色
+//        valid=緑, outside_domain=青, overlap_building=赤,
+//        below_min_area=灰, access_sliver=橙, invalid_shape=紫
+//   Score (mode 3)      : 有効候補のスコア (青->赤)
+//   show_candidates=0 で候補点を全て隠す。
+//   show_rejected_candidates=0 で棄却候補を隠す。
+// 種類ごとに Z を少しずらして、同一平面での表示のちらつきを避ける。
+// =====================================================================
+int mode   = detail(1, "cfg_debug_mode", 0);
+int showc  = detail(1, "cfg_show_candidates", 0);
+int showr  = detail(1, "cfg_show_rejected_candidates", 0);
+float base = detail(1, "cfg_base_size", 0);
+float dz   = 0.002 * base;
+
+if (inpointgroup(0, "candidate", @ptnum)) {
+    int code = i@reject_code;
+    if (!showc || (mode != 2 && mode != 3) || (code != 0 && (!showr || mode == 3))) {
+        removepoint(0, @ptnum);
+    }
+    else {
+        vector cols[] = array({0.1, 0.9, 0.2}, {0.2, 0.4, 1.0}, {1.0, 0.15, 0.15},
+                              {0.5, 0.5, 0.5}, {1.0, 0.55, 0.0}, {0.7, 0.2, 0.9});
+        if (mode == 3) v@Cd = hsvtorgb(set(lerp(0.66, 0.0, clamp(f@score, 0.0, 1.0)), 0.85, 0.95));
+        else           v@Cd = cols[clamp(code, 0, 5)];
+        @P.z = 3.0 * dz;
+    }
+}
+else {
+    int prs[] = pointprims(0, @ptnum);
+    if (len(prs) > 0) {
+        string c = prim(0, "class", prs[0]);
+        if (c == "building")      @P.z = 1.0 * dz;
+        else if (c == "topk")     @P.z = 4.0 * dz;
+        else if (c == "residual") @P.z = 0.0;
+        else                      @P.z = -1.0 * dz;
+    }
+    else if (inpointgroup(0, "residual_label", @ptnum)) {
+        @P.z = 5.0 * dz;            // H08 の残余 ID ラベル点
+        v@Cd = set(0.0, 0.0, 0.0);
+    }
+}

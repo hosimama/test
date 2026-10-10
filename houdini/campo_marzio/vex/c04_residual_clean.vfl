@@ -1,0 +1,17 @@
+// =====================================================================
+// C04_RESIDUAL_CLEAN            (subnet: RESIDUAL_EXTRACT)
+// Attribute Wrangle  /  Run Over: Primitives
+// Input 0 : C_FUSE (Boolean 結果を Fuse したもの)
+// Input 1 : 状態ジオメトリ (domain_area 参照)
+// ---------------------------------------------------------------------
+// Boolean が辺の一致部分に生成しうるゼロ面積の細片を除去し、
+// 残余空間としてタグ付けする。
+// =====================================================================
+float tol = 1e-7 * detail(1, "domain_area", 0);
+if (primintrinsic(0, "measuredarea", @primnum) <= tol) {
+    removeprim(0, @primnum, 1);
+}
+else {
+    s@class = "residual";
+    i@group_residual = 1;
+}

@@ -1,0 +1,153 @@
+// =====================================================================
+// H01_FINAL_STATS               (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : ITERATION_CONTROLLER の出力 (最終状態)
+// Input 1 : 最終状態から再抽出した残余空間 (H 内の RESIDUAL_EXTRACT output 0)
+// ---------------------------------------------------------------------
+// 最終的な充填率・未充填面積を確定し、Phase 1 の合格条件を独立に検証する。
+//
+//   i@check_overlap_pairs   建築同士の重複ペア数        (0 であるべき)
+//   i@check_outside_count   都市領域からはみ出す建築数    (0 であるべき)
+//   f@check_area_balance    |domain - Σbuilding - residual| / domain
+//                           (Boolean の残余面積と建築面積の和が都市領域面積と一致するか。
+//                            重複やはみ出しがあると大きくなる。~1e-6 程度であるべき)
+//   i@check_passed          上記がすべて満たされたら 1
+//   f@final_fill_ratio, f@final_unfilled_area, i@final_residual_count,
+//   i@final_iterations, s@final_stop_reason, i@building_count
+// =====================================================================
+
+float cr(vector a; vector b) { return a.x * b.y - a.y * b.x; }
+
+int seg_cross(vector p1; vector p2; vector q1; vector q2) {
+    float d1 = cr(p2 - p1, q1 - p1);
+    float d2 = cr(p2 - p1, q2 - p1);
+    float d3 = cr(q2 - q1, p1 - q1);
+    float d4 = cr(q2 - q1, p2 - q1);
+    return (d1 * d2 < 0.0) && (d3 * d4 < 0.0);
+}
+
+float seg_dist(vector p; vector a; vector b) {
+    vector ab = b - a;
+    float L2 = dot(ab, ab);
+    float t = (L2 > 0.0) ? clamp(dot(p - a, ab) / L2, 0.0, 1.0) : 0.0;
+    return distance(p, a + ab * t);
+}
+
+int pip(vector p; vector poly[]) {
+    int c = 0;
+    int n = len(poly);
+    for (int i = 0; i < n; i++) {
+        vector a = poly[i], b = poly[(i + 1) % n];
+        if ((a.y > p.y) != (b.y > p.y)) {
+            float x = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
+            if (p.x < x) c = !c;
+        }
+    }
+    return c;
+}
+
+float edge_dist(vector p; vector poly[]) {
+    float d = 1e30;
+    int n = len(poly);
+    for (int i = 0; i < n; i++) d = min(d, seg_dist(p, poly[i], poly[(i + 1) % n]));
+    return d;
+}
+
+int strictly_inside(vector p; vector poly[]; float tol) { return pip(p, poly) && edge_dist(p, poly) > tol; }
+int inside_or_on(vector p; vector poly[]; float tol)    { return pip(p, poly) || edge_dist(p, poly) <= tol; }
+
+vector centroid(vector poly[]) {
+    float a2 = 0.0; vector c = 0;
+    int n = len(poly);
+    for (int i = 0; i < n; i++) {
+        float k = cr(poly[i], poly[(i + 1) % n]);
+        a2 += k;
+        c += (poly[i] + poly[(i + 1) % n]) * k;
+    }
+    if (abs(a2) < 1e-12) { c = 0; foreach (vector q; poly) c += q; return c / max(n, 1); }
+    return c / (3.0 * a2);
+}
+
+int poly_overlap(vector A[]; vector B[]; float tol) {
+    int na = len(A), nb = len(B);
+    for (int i = 0; i < na; i++)
+        for (int j = 0; j < nb; j++)
+            if (seg_cross(A[i], A[(i + 1) % na], B[j], B[(j + 1) % nb])) return 1;
+    foreach (vector p; A) if (strictly_inside(p, B, tol)) return 1;
+    foreach (vector p; B) if (strictly_inside(p, A, tol)) return 1;
+    if (strictly_inside(centroid(A), B, tol)) return 1;
+    if (strictly_inside(centroid(B), A, tol)) return 1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------
+float base = f@cfg_base_size;
+float tol  = 1e-3 * base;
+
+int dprim = -1;
+for (int p = 0; p < nprimitives(0); p++) if (prim(0, "class", p) == "domain") { dprim = p; break; }
+vector D[];
+if (dprim >= 0) foreach (int pt; primpoints(0, dprim)) append(D, point(0, "P", pt));
+
+int blds[] = expandprimgroup(0, "building");
+int nb = len(blds);
+
+vector V[]; int st[], ct[]; vector bmn[], bmx[];
+float built = 0.0;
+foreach (int p; blds) {
+    append(st, len(V));
+    int pts[] = primpoints(0, p);
+    append(ct, len(pts));
+    vector mn = set(1e30, 1e30, 0), mx = set(-1e30, -1e30, 0);
+    foreach (int pt; pts) { vector q = point(0, "P", pt); append(V, q); mn = min(mn, q); mx = max(mx, q); }
+    append(bmn, mn); append(bmx, mx);
+    built += primintrinsic(0, "measuredarea", p);
+}
+
+// 建築同士の重複
+int novl = 0;
+for (int i = 0; i < nb; i++) {
+    for (int j = i + 1; j < nb; j++) {
+        if (bmn[i].x > bmx[j].x || bmn[j].x > bmx[i].x || bmn[i].y > bmx[j].y || bmn[j].y > bmx[i].y) continue;
+        vector A[] = V[st[i] : st[i] + ct[i]];
+        vector B[] = V[st[j] : st[j] + ct[j]];
+        if (poly_overlap(A, B, tol)) {
+            novl++;
+            warning("建築 %d と %d が重複しています。", prim(0, "building_id", blds[i]), prim(0, "building_id", blds[j]));
+        }
+    }
+}
+
+// 都市領域からのはみ出し
+int nout = 0;
+int nd = len(D);
+for (int i = 0; i < nb; i++) {
+    vector A[] = V[st[i] : st[i] + ct[i]];
+    int out = 0;
+    foreach (vector q; A) if (!inside_or_on(q, D, tol)) { out = 1; break; }
+    int na = len(A);
+    for (int a = 0; a < na && !out; a++)
+        for (int k = 0; k < nd; k++)
+            if (seg_cross(A[a], A[(a + 1) % na], D[k], D[(k + 1) % nd])) { out = 1; break; }
+    if (out) { nout++; warning("建築 %d が都市領域からはみ出しています。", prim(0, "building_id", blds[i])); }
+}
+
+float domA = max(f@domain_area, 1e-12);
+float resA = detail(1, "total_residual_area", 0);
+float bal  = abs(domA - built - resA) / domA;
+
+i@check_overlap_pairs  = novl;
+i@check_outside_count  = nout;
+f@check_area_balance   = bal;
+i@check_passed         = (novl == 0 && nout == 0 && bal < 1e-4) ? 1 : 0;
+
+f@final_fill_ratio     = built / domA;
+f@final_unfilled_area  = resA;
+i@final_residual_count = detail(1, "residual_count", 0);
+f@final_max_residual   = detail(1, "max_residual_area", 0);
+i@final_iterations     = i@iter;
+s@final_stop_reason    = (s@stop_reason != "") ? s@stop_reason : "loop_count";
+i@building_count       = nb;
+
+if (!i@check_passed)
+    warning("Phase 1 検証に失敗: overlap=%d outside=%d area_balance=%g", novl, nout, bal);

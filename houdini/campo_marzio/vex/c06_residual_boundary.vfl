@@ -1,0 +1,58 @@
+// =====================================================================
+// C06_RESIDUAL_BOUNDARY         (subnet: RESIDUAL_EXTRACT)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : C05_RESIDUAL_STATS
+// Input 1 : 状態ジオメトリ (building, cfg_*)
+// ---------------------------------------------------------------------
+// 残余空間の境界を 2 点のポリライン (線分) の集合として出力する。
+// 候補図形の内外判定・接触判定 (Fit/Access) はこの線分を使う。
+//
+// プリミティブ属性:
+//   i@residual_id      どの残余領域の境界か
+//   i@src_building_id  接している建築の building_id。-1 = 都市領域の外周
+//   s@class = "boundary"
+// =====================================================================
+
+float base = detail(1, "cfg_base_size", 0);
+float tol  = 1e-4 * base;
+
+// 入力 0 から境界辺を集める (入力側は削除の影響を受けない)
+vector SA[], SB[];
+int    SR[], SS[];
+for (int p = 0; p < nprimitives(0); p++) {
+    int r = prim(0, "residual_id", p);
+    int h0 = primhedge(0, p);
+    int h  = h0;
+    int guard = 0;
+    while (h >= 0 && guard < 1000000) {
+        if (hedge_equivcount(0, h) == 1) {
+            vector A = point(0, "P", hedge_srcpoint(0, h));
+            vector B = point(0, "P", hedge_dstpoint(0, h));
+            int bp; vector buv;
+            float d = xyzdist(1, "building", 0.5 * (A + B), bp, buv, 10.0 * tol);
+            int src = (bp >= 0 && d >= 0.0 && d <= 10.0 * tol) ? prim(1, "building_id", bp) : -1;
+            append(SA, A); append(SB, B); append(SR, r); append(SS, src);
+        }
+        h = hedge_next(0, h);
+        guard++;
+        if (h == h0) break;
+    }
+}
+
+// 自身 (残余ポリゴン) を消して線分に置き換える
+for (int p = 0; p < nprimitives(0); p++) removeprim(0, p, 0);
+for (int i = 0; i < npoints(0); i++)     removepoint(0, i);
+
+addprimattrib(0, "residual_id", -1);
+addprimattrib(0, "src_building_id", -1);
+addprimattrib(0, "class", "");
+
+for (int i = 0; i < len(SA); i++) {
+    int a = addpoint(0, SA[i]);
+    int b = addpoint(0, SB[i]);
+    int pr = addprim(0, "polyline", a, b);
+    setprimattrib(0, "residual_id",     pr, SR[i]);
+    setprimattrib(0, "src_building_id", pr, SS[i]);
+    setprimattrib(0, "class",           pr, "boundary");
+}
+i@boundary_segment_count = len(SA);

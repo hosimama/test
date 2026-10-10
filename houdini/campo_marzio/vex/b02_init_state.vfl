@@ -1,0 +1,56 @@
+// =====================================================================
+// B02_INIT_STATE                (subnet: INITIAL_LAYOUT)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : B01_INITIAL_BUILDINGS
+// ---------------------------------------------------------------------
+// 反復ループに入る前の「状態」detail 属性を初期化する。
+// ループはこのジオメトリ (domain + building + cfg_* + 状態) を受け渡す。
+// =====================================================================
+
+int blds[] = expandprimgroup(0, "building");
+
+float built = 0.0;
+int   maxid = -1;
+foreach (int p; blds) {
+    built += primintrinsic(0, "measuredarea", p);
+    maxid  = max(maxid, prim(0, "building_id", p));
+}
+
+i@iter             = 0;
+i@stop             = 0;
+s@stop_reason      = "";
+i@next_building_id = maxid + 1;
+f@built_area       = built;
+f@fill_ratio       = built / max(f@domain_area, 1e-12);
+f@improvement      = 0.0;
+f@unfilled_area    = f@domain_area - built;
+i@placed           = 0;
+i@n_candidates     = 0;
+i@n_valid          = 0;
+f@last_score       = -1.0;
+i[]@reject_counts  = array(0, 0, 0, 0, 0, 0);
+
+// Variety 用: 直近 K 棟の orientation / scale (building_id 順)
+int K = max(1, i@cfg_variety_window);
+int ids[];
+foreach (int p; blds) append(ids, prim(0, "building_id", p));
+int order[] = argsort(ids);
+float ro[], rs[];
+int start = max(0, len(order) - K);
+for (int k = start; k < len(order); k++) {
+    int p = blds[order[k]];
+    append(ro, prim(0, "orientation", p));
+    append(rs, prim(0, "scale", p));
+}
+f[]@recent_orient = ro;
+f[]@recent_scale  = rs;
+
+// 反復ごとの履歴 (G04 で追記)
+int   empty_i[];
+float empty_f[];
+i[]@hist_building_id  = empty_i;
+f[]@hist_score        = empty_f;
+i[]@hist_n_candidates = empty_i;
+i[]@hist_n_valid      = empty_i;
+f[]@hist_fill_ratio   = empty_f;
+f[]@hist_max_residual = empty_f;

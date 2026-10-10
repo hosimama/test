@@ -1,0 +1,65 @@
+// =====================================================================
+// A03_DOMAIN_CHECK              (subnet: INPUT_DOMAIN)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : A02_DOMAIN_BUILD
+// ---------------------------------------------------------------------
+// 都市領域の検証:
+//   - 頂点数 >= 3
+//   - 連続する重複点 (警告)
+//   - ゼロ面積 (エラー)
+//   - 自己交差 (エラー)
+// 出力 detail: f@domain_area, i@domain_vertex_count, i@domain_winding_sign,
+//              v@domain_bbmin, v@domain_bbmax
+// =====================================================================
+
+float cr(vector a; vector b) { return a.x * b.y - a.y * b.x; }
+
+int seg_cross(vector p1; vector p2; vector q1; vector q2) {
+    float d1 = cr(p2 - p1, q1 - p1);
+    float d2 = cr(p2 - p1, q2 - p1);
+    float d3 = cr(q2 - q1, p1 - q1);
+    float d4 = cr(q2 - q1, p2 - q1);
+    return (d1 * d2 < 0.0) && (d3 * d4 < 0.0);
+}
+
+int pts[] = primpoints(0, 0);
+int n = len(pts);
+if (n < 3) error("都市領域の頂点数が %d です (3 以上必要)。", n);
+
+vector P[];
+foreach (int pt; pts) append(P, point(0, "P", pt));
+
+// bbox / スケール
+vector bmin = P[0], bmax = P[0];
+foreach (vector q; P) { bmin = min(bmin, q); bmax = max(bmax, q); }
+float diag = length(bmax - bmin);
+float tol  = 1e-6 * max(diag, 1e-6);
+
+// 重複点
+int ndup = 0;
+for (int i = 0; i < n; i++)
+    if (distance(P[i], P[(i + 1) % n]) <= tol) ndup++;
+if (ndup > 0)
+    warning("都市領域に連続する重複点が %d 個あります。Fuse SOP などで除去してください。", ndup);
+
+// 面積 (shoelace, 符号付き)
+float a2 = 0.0;
+for (int i = 0; i < n; i++) a2 += cr(P[i], P[(i + 1) % n]);
+float area = 0.5 * abs(a2);
+if (area <= tol * diag) error("都市領域の面積がゼロです。");
+
+// 自己交差 (隣接しない辺同士)
+int nx = 0;
+for (int i = 0; i < n; i++) {
+    for (int j = i + 2; j < n; j++) {
+        if (i == 0 && j == n - 1) continue;   // 隣接 (閉じた辺)
+        if (seg_cross(P[i], P[(i + 1) % n], P[j], P[(j + 1) % n])) nx++;
+    }
+}
+if (nx > 0) error("都市領域が自己交差しています (%d 箇所)。", nx);
+
+f@domain_area         = area;
+i@domain_vertex_count = n;
+i@domain_winding_sign = (a2 > 0.0) ? 1 : -1;   // +1 = XY 平面で反時計回り
+v@domain_bbmin        = bmin;
+v@domain_bbmax        = bmax;

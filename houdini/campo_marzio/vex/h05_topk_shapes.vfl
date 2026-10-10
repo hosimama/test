@@ -1,0 +1,46 @@
+// =====================================================================
+// H05_TOPK_SHAPES               (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : H04_OUT_CANDIDATES
+// ---------------------------------------------------------------------
+// 有効候補のうちスコア上位 debug_top_k 個の輪郭を閉じたポリラインで描く。
+// 候補点そのものは消し、輪郭だけを出力する。
+//   i@rank (0 = 最良), f@score, i@cand_id, s@class = "topk"
+// =====================================================================
+int K = detail(0, "cfg_debug_top_k", 0);
+
+int   idx[];
+float sc[];
+for (int i = 0; i < npoints(0); i++) {
+    if (point(0, "reject_code", i) != 0) continue;
+    append(idx, i);
+    append(sc, point(0, "score", i));
+}
+int order[] = argsort(sc);       // 昇順
+order = reverse(order);          // 降順
+
+for (int i = 0; i < npoints(0); i++) removepoint(0, i);
+addprimattrib(0, "rank", -1);
+addprimattrib(0, "score", -1.0);
+addprimattrib(0, "cand_id", -1);
+addprimattrib(0, "class", "");
+
+for (int k = 0; k < min(K, len(order)); k++) {
+    int i = idx[order[k]];
+    vector c = point(0, "P", i);
+    float t = radians(point(0, "theta", i));
+    float w = point(0, "width", i), d = point(0, "depth", i);
+    vector ex = set(cos(t), sin(t), 0.0);
+    vector ey = set(-sin(t), cos(t), 0.0);
+    int pts[];
+    append(pts, addpoint(0, c - ex * 0.5 * w - ey * 0.5 * d));
+    append(pts, addpoint(0, c + ex * 0.5 * w - ey * 0.5 * d));
+    append(pts, addpoint(0, c + ex * 0.5 * w + ey * 0.5 * d));
+    append(pts, addpoint(0, c - ex * 0.5 * w + ey * 0.5 * d));
+    append(pts, pts[0]);
+    int pr = addprim(0, "polyline", pts);
+    setprimattrib(0, "rank",    pr, k);
+    setprimattrib(0, "score",   pr, point(0, "score", i));
+    setprimattrib(0, "cand_id", pr, point(0, "cand_id", i));
+    setprimattrib(0, "class",   pr, "topk");
+}

@@ -1,0 +1,24 @@
+// =====================================================================
+// T01_TEST_FOOTPRINTS           (テストシーン用。HDA の外に置く)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : なし
+// ---------------------------------------------------------------------
+// 既定の矩形都市領域 (200 x 140, 原点中心) の中に、向きの異なる
+// 初期建築を 3 棟置く。1 棟は都市領域の縁に接している。
+// HDA の input 1 (既存建築ポリゴン) に接続して使う。
+// =====================================================================
+void rect(vector c; float th; float w; float d) {
+    float t = radians(th);
+    vector ex = set(cos(t), sin(t), 0.0);
+    vector ey = set(-sin(t), cos(t), 0.0);
+    int pts[];
+    append(pts, addpoint(0, c - ex * 0.5 * w - ey * 0.5 * d));
+    append(pts, addpoint(0, c + ex * 0.5 * w - ey * 0.5 * d));
+    append(pts, addpoint(0, c + ex * 0.5 * w + ey * 0.5 * d));
+    append(pts, addpoint(0, c - ex * 0.5 * w + ey * 0.5 * d));
+    addprim(0, "poly", pts);
+}
+
+rect(set(-40.0,  10.0, 0.0),  0.0, 36.0, 22.0);   // 都市の中心付近、軸 0°
+rect(set( 55.0, -25.0, 0.0), 30.0, 30.0, 18.0);   // 30° 回転
+rect(set(  0.0, -61.0, 0.0),  0.0, 50.0, 18.0);   // 下辺 (y=-70) に接する

@@ -1,0 +1,117 @@
+// =====================================================================
+// E02_CANDIDATE_VALIDATE        (subnet: CANDIDATE_PLACEMENT)
+// Attribute Wrangle  /  Run Over: Points
+// Input 0 : E01_CANDIDATE_GENERATE (候補点)
+// Input 1 : 残余空間の境界線分 (RESIDUAL_EXTRACT output 1)
+// Input 2 : 残余空間ポリゴン   (RESIDUAL_EXTRACT output 0)
+// Input 3 : 状態ジオメトリ     (domain, building, cfg_*)
+// ---------------------------------------------------------------------
+// 候補矩形が「残余空間の内部に完全に収まるか」を厳密に判定する。
+// 境界ボックスだけでは確定しない。判定は次の 3 条件の AND:
+//   (1) 図形中心が残余ポリゴン上にある
+//   (2) 図形の辺が残余境界線分と交差しない
+//   (3) 残余境界線分の端点・中点が図形の内部にない
+// 残余境界 = 都市領域の外周 + 既存建築の外周 なので、これで
+// 「都市領域からはみ出さない」「既存建築と重ならない」を同時に保証する。
+// 判定には clearance だけ膨らませ、eps だけ縮めた矩形を使う
+// (境界にぴったり接する配置は許可する)。
+//
+// i@reject_code / s@reject_reason
+//   0 valid
+//   1 outside_domain   (都市領域外にはみ出す)
+//   2 overlap_building (既存建築と重複)
+//   3 below_min_area   (最小建築面積未満)
+//   4 access_sliver    (F01 で設定: 細すぎる隙間を作る)
+//   5 invalid_shape    (不正な図形)
+// =====================================================================
+
+float cr(vector a; vector b) { return a.x * b.y - a.y * b.x; }
+
+int seg_cross(vector p1; vector p2; vector q1; vector q2) {
+    float d1 = cr(p2 - p1, q1 - p1);
+    float d2 = cr(p2 - p1, q2 - p1);
+    float d3 = cr(q2 - q1, p1 - q1);
+    float d4 = cr(q2 - q1, p2 - q1);
+    return (d1 * d2 < 0.0) && (d3 * d4 < 0.0);
+}
+
+string REASONS[] = {"valid", "outside_domain", "overlap_building",
+                    "below_min_area", "access_sliver", "invalid_shape"};
+
+float base      = detail(3, "cfg_base_size", 0);
+float minA      = detail(3, "cfg_minimum_building_area", 0);
+float clearance = detail(3, "cfg_clearance", 0);
+float eps       = 1e-4 * base;
+
+float w  = f@width;
+float d  = f@depth;
+int code = 0;
+int hit_seg = -1;
+
+if (isnan(w) || isnan(d) || isnan(f@theta) || !(w > eps) || !(d > eps) || w > 1e9 || d > 1e9) {
+    code = 5;
+}
+else if (w * d < minA) {
+    code = 3;
+}
+else {
+    // (1) 中心が残余空間内か
+    int pr; vector uv;
+    float dc = xyzdist(2, @P, pr, uv);
+    if (pr < 0 || dc > 10.0 * eps) {
+        int dp; vector duv;
+        float dd = xyzdist(3, "domain", @P, dp, duv);
+        code = (dp >= 0 && dd <= 10.0 * eps) ? 2 : 1;
+    }
+    else {
+        float t   = radians(f@theta);
+        vector ex = set(cos(t), sin(t), 0.0);
+        vector ey = set(-sin(t), cos(t), 0.0);
+        float thw = 0.5 * w + clearance - eps;
+        float thd = 0.5 * d + clearance - eps;
+
+        vector C[];
+        append(C, @P - ex * thw - ey * thd);
+        append(C, @P + ex * thw - ey * thd);
+        append(C, @P + ex * thw + ey * thd);
+        append(C, @P - ex * thw + ey * thd);
+
+        vector bmin = C[0], bmax = C[0];
+        foreach (vector c; C) { bmin = min(bmin, c); bmax = max(bmax, c); }
+        bmin -= set(eps, eps, 1.0);
+        bmax += set(eps, eps, 1.0);
+
+        // 広域判定: bbox に掛かる線分だけを調べる
+        int segs[] = primfind(1, bmin, bmax);
+        foreach (int s; segs) {
+            int sp[] = primpoints(1, s);
+            if (len(sp) < 2) continue;
+            vector A = point(1, "P", sp[0]);
+            vector B = point(1, "P", sp[1]);
+
+            int hit = 0;
+            // (3) 線分の端点・中点が図形内部にあるか (ローカル座標で判定)
+            vector Ts[] = array(A, B, 0.5 * (A + B));
+            foreach (vector T; Ts) {
+                vector l = T - @P;
+                if (abs(dot(l, ex)) < thw && abs(dot(l, ey)) < thd) { hit = 1; break; }
+            }
+            // (2) 辺の交差
+            if (!hit) {
+                for (int e = 0; e < 4; e++)
+                    if (seg_cross(C[e], C[(e + 1) % 4], A, B)) { hit = 1; break; }
+            }
+            if (hit) {
+                code = (prim(1, "src_building_id", s) < 0) ? 1 : 2;
+                hit_seg = s;
+                break;
+            }
+        }
+    }
+}
+
+i@reject_code   = code;
+s@reject_reason = REASONS[code];
+i@hit_segment   = hit_seg;
+f@area          = w * d;
+if (code != 0) f@score = -1.0;

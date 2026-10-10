@@ -1,0 +1,54 @@
+// =====================================================================
+// A02_DOMAIN_BUILD              (subnet: INPUT_DOMAIN)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : A01_PARAMS
+// ---------------------------------------------------------------------
+// cfg_domain_mode
+//   0 = Input Polygon : HDA input 0 のポリゴン 1 枚を都市領域とする
+//   1 = Rectangle     : domain_width x domain_height の矩形を原点中心に生成
+// 出力: 都市領域ポリゴン 1 枚 (s@class="domain", group "domain"), Z=0
+// =====================================================================
+
+addprimattrib(0, "class", "");
+
+int mode = i@cfg_domain_mode;
+
+if (mode == 1) {
+    // 入力は捨てて矩形を生成する
+    for (int p = 0; p < nprimitives(0); p++) removeprim(0, p, 0);
+    for (int i = 0; i < npoints(0); i++)     removepoint(0, i);
+
+    float hw = 0.5 * f@cfg_domain_width;
+    float hh = 0.5 * f@cfg_domain_height;
+    if (hw <= 0.0 || hh <= 0.0) error("domain_width / domain_height は正の値にしてください。");
+
+    int pts[];
+    append(pts, addpoint(0, set(-hw, -hh, 0.0)));
+    append(pts, addpoint(0, set( hw, -hh, 0.0)));
+    append(pts, addpoint(0, set( hw,  hh, 0.0)));
+    append(pts, addpoint(0, set(-hw,  hh, 0.0)));
+    int pr = addprim(0, "poly", pts);
+    setprimattrib(0, "class", pr, "domain");
+    setprimgroup(0, "domain", pr, 1);
+}
+else {
+    int np = nprimitives(0);
+    if (np == 0) error("domain_mode=Input Polygon ですが、input 0 にポリゴンがありません。");
+    if (np > 1)  error("都市領域は 1 枚のポリゴンにしてください (現在 %d 枚)。穴のある都市領域は Phase 1 では未対応です。", np);
+    string tn = primintrinsic(0, "typename", 0);
+    if (tn != "Poly") error("都市領域はポリゴン (Poly) にしてください (現在 %s)。", tn);
+    if (primintrinsic(0, "closed", 0) == 0) error("都市領域のポリゴンが閉じていません。");
+
+    // XY 平面へ投影 (Z を 0 に)
+    float zmax = 0.0;
+    for (int i = 0; i < npoints(0); i++) {
+        vector P = point(0, "P", i);
+        zmax = max(zmax, abs(P.z));
+        setpointattrib(0, "P", i, set(P.x, P.y, 0.0));
+    }
+    if (zmax > 1e-4)
+        warning("都市領域が XY 平面上にありません (|z| 最大 %g)。Z=0 に投影しました。", zmax);
+
+    setprimattrib(0, "class", 0, "domain");
+    setprimgroup(0, "domain", 0, 1);
+}

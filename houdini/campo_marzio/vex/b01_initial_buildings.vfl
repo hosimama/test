@@ -1,0 +1,217 @@
+// =====================================================================
+// B01_INITIAL_BUILDINGS         (subnet: INITIAL_LAYOUT)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : INPUT_DOMAIN の出力 (domain + cfg_*)
+// Input 1 : 既存建築フットプリント (HDA input 1, 任意)
+// ---------------------------------------------------------------------
+// cfg_initial_layout_mode
+//   0 = None              : 初期建築なし (1 棟目もアルゴリズムが配置する)
+//   1 = Manual Footprints : input 1 のポリゴンを初期建築とする
+//   2 = Voronoi Seeds     : Phase 1 未実装 -> None として扱う (警告)
+//   3 = Boundary Anchors  : Phase 1 未実装 -> None として扱う (警告)
+//
+// Manual Footprints の検証:
+//   頂点数 < 3 / ゼロ面積 / 都市領域外 / 先に採用した建築と重複
+//   のいずれかに該当するものは採用せず、警告と i@initial_rejected に記録する。
+//
+// 建築プリミティブ属性:
+//   s@class="building", group "building",
+//   i@building_id, i@shape_type (0=Rectangle, -1=Manual/非矩形),
+//   f@orientation (度, [0,180)), f@scale, i@generation (=0),
+//   f@width, f@depth, f@area, f@score (-1 = 初期建築)
+// =====================================================================
+
+float cr(vector a; vector b) { return a.x * b.y - a.y * b.x; }
+
+int seg_cross(vector p1; vector p2; vector q1; vector q2) {
+    float d1 = cr(p2 - p1, q1 - p1);
+    float d2 = cr(p2 - p1, q2 - p1);
+    float d3 = cr(q2 - q1, p1 - q1);
+    float d4 = cr(q2 - q1, p2 - q1);
+    return (d1 * d2 < 0.0) && (d3 * d4 < 0.0);
+}
+
+float seg_dist(vector p; vector a; vector b) {
+    vector ab = b - a;
+    float L2 = dot(ab, ab);
+    float t = (L2 > 0.0) ? clamp(dot(p - a, ab) / L2, 0.0, 1.0) : 0.0;
+    return distance(p, a + ab * t);
+}
+
+// 偶奇規則による点の内外判定
+int pip(vector p; vector poly[]) {
+    int c = 0;
+    int n = len(poly);
+    for (int i = 0; i < n; i++) {
+        vector a = poly[i], b = poly[(i + 1) % n];
+        if ((a.y > p.y) != (b.y > p.y)) {
+            float x = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
+            if (p.x < x) c = !c;
+        }
+    }
+    return c;
+}
+
+float edge_dist(vector p; vector poly[]) {
+    float d = 1e30;
+    int n = len(poly);
+    for (int i = 0; i < n; i++) d = min(d, seg_dist(p, poly[i], poly[(i + 1) % n]));
+    return d;
+}
+
+// 境界から tol 以上離れて内側にあるか
+int strictly_inside(vector p; vector poly[]; float tol) {
+    return pip(p, poly) && edge_dist(p, poly) > tol;
+}
+
+// 境界上または内側にあるか
+int inside_or_on(vector p; vector poly[]; float tol) {
+    return pip(p, poly) || edge_dist(p, poly) <= tol;
+}
+
+vector centroid(vector poly[]) {
+    float a2 = 0.0; vector c = 0;
+    int n = len(poly);
+    for (int i = 0; i < n; i++) {
+        float k = cr(poly[i], poly[(i + 1) % n]);
+        a2 += k;
+        c += (poly[i] + poly[(i + 1) % n]) * k;
+    }
+    if (abs(a2) < 1e-12) { c = 0; foreach (vector q; poly) c += q; return c / max(n, 1); }
+    return c / (3.0 * a2);
+}
+
+// 単純多角形 A, B の内部が重なるか (辺の接触は重なりとみなさない)
+int poly_overlap(vector A[]; vector B[]; float tol) {
+    int na = len(A), nb = len(B);
+    for (int i = 0; i < na; i++)
+        for (int j = 0; j < nb; j++)
+            if (seg_cross(A[i], A[(i + 1) % na], B[j], B[(j + 1) % nb])) return 1;
+    foreach (vector p; A) if (strictly_inside(p, B, tol)) return 1;
+    foreach (vector p; B) if (strictly_inside(p, A, tol)) return 1;
+    if (strictly_inside(centroid(A), B, tol)) return 1;
+    if (strictly_inside(centroid(B), A, tol)) return 1;
+    return 0;
+}
+
+float poly_area(vector poly[]) {
+    float a2 = 0.0; int n = len(poly);
+    for (int i = 0; i < n; i++) a2 += cr(poly[i], poly[(i + 1) % n]);
+    return 0.5 * abs(a2);
+}
+
+// ---------------------------------------------------------------------
+addprimattrib(0, "class", "");
+addprimattrib(0, "building_id", -1);
+addprimattrib(0, "shape_type", -1);
+addprimattrib(0, "orientation", 0.0);
+addprimattrib(0, "scale", 0.0);
+addprimattrib(0, "generation", -1);
+addprimattrib(0, "width", 0.0);
+addprimattrib(0, "depth", 0.0);
+addprimattrib(0, "area", 0.0);
+addprimattrib(0, "score", -1.0);
+
+int mode = i@cfg_initial_layout_mode;
+i@initial_rejected = 0;
+i@initial_count    = 0;
+
+if (mode == 2 || mode == 3) {
+    warning("initial_layout_mode=%d は Phase 1 では未実装です。None として扱います。", mode);
+    mode = 0;
+}
+if (mode != 1) return;
+
+// 都市領域
+int dprim = -1;
+for (int p = 0; p < nprimitives(0); p++)
+    if (prim(0, "class", p) == "domain") { dprim = p; break; }
+if (dprim < 0) error("domain プリミティブが見つかりません。");
+vector D[];
+foreach (int pt; primpoints(0, dprim)) append(D, point(0, "P", pt));
+
+float base = f@cfg_base_size;
+float tol  = 1e-5 * base;
+
+vector acc[];        // 採用済み建築の頂点 (平坦化)
+int    acc_start[];
+int    acc_count[];
+
+int nid = 0;
+int nbad = 0;
+for (int p = 0; p < nprimitives(1); p++) {
+    int pts[] = primpoints(1, p);
+    vector Q[];
+    foreach (int pt; pts) {
+        vector q = point(1, "P", pt);
+        q.z = 0.0;
+        // 連続重複点の除去
+        if (len(Q) == 0 || distance(q, Q[-1]) > tol) append(Q, q);
+    }
+    if (len(Q) >= 2 && distance(Q[0], Q[-1]) <= tol) pop(Q);
+
+    if (len(Q) < 3)              { nbad++; warning("footprint %d: 頂点数不足のため除外", p); continue; }
+    float a = poly_area(Q);
+    if (a <= tol * base)         { nbad++; warning("footprint %d: ゼロ面積のため除外", p); continue; }
+
+    // 都市領域に含まれるか
+    int outside = 0;
+    foreach (vector q; Q) if (!inside_or_on(q, D, tol)) { outside = 1; break; }
+    if (!outside) {
+        int nq = len(Q), nd = len(D);
+        for (int i = 0; i < nq && !outside; i++)
+            for (int j = 0; j < nd; j++)
+                if (seg_cross(Q[i], Q[(i + 1) % nq], D[j], D[(j + 1) % nd])) { outside = 1; break; }
+    }
+    if (outside) { nbad++; warning("footprint %d: 都市領域からはみ出すため除外", p); continue; }
+
+    // 既に採用した建築と重ならないか
+    int ov = 0;
+    for (int k = 0; k < len(acc_start); k++) {
+        vector B[] = acc[acc_start[k] : acc_start[k] + acc_count[k]];
+        if (poly_overlap(Q, B, tol)) { ov = 1; break; }
+    }
+    if (ov) { nbad++; warning("footprint %d: 他の初期建築と重複するため除外", p); continue; }
+
+    // 採用
+    append(acc_start, len(acc));
+    append(acc_count, len(Q));
+    foreach (vector q; Q) append(acc, q);
+
+    int npts[];
+    foreach (vector q; Q) append(npts, addpoint(0, q));
+    int pr = addprim(0, "poly", npts);
+
+    // 最長辺 -> orientation / width
+    float Lmax = -1.0, th = 0.0;
+    int nq = len(Q);
+    for (int i = 0; i < nq; i++) {
+        vector e = Q[(i + 1) % nq] - Q[i];
+        float L = length(e);
+        if (L > Lmax) { Lmax = L; th = degrees(atan2(e.y, e.x)); }
+    }
+    th = th % 180.0; if (th < 0.0) th += 180.0;
+
+    // 矩形判定 (4 頂点かつ全ての角がほぼ直角)
+    int is_rect = (nq == 4);
+    for (int i = 0; i < nq && is_rect; i++) {
+        vector e0 = normalize(Q[(i + 1) % nq] - Q[i]);
+        vector e1 = normalize(Q[(i + 2) % nq] - Q[(i + 1) % nq]);
+        if (abs(dot(e0, e1)) > 1e-3) is_rect = 0;
+    }
+
+    setprimattrib(0, "class",       pr, "building");
+    setprimgroup (0, "building",    pr, 1);
+    setprimattrib(0, "building_id", pr, nid);
+    setprimattrib(0, "shape_type",  pr, is_rect ? 0 : -1);
+    setprimattrib(0, "orientation", pr, th);
+    setprimattrib(0, "scale",       pr, sqrt(a) / base);
+    setprimattrib(0, "generation",  pr, 0);
+    setprimattrib(0, "width",       pr, Lmax);
+    setprimattrib(0, "depth",       pr, a / Lmax);
+    setprimattrib(0, "area",        pr, a);
+    setprimattrib(0, "score",       pr, -1.0);
+    nid++;
+}
+i@initial_rejected = nbad;
+i@initial_count    = nid;

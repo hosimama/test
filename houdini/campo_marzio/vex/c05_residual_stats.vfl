@@ -1,0 +1,142 @@
+// =====================================================================
+// C05_RESIDUAL_STATS            (subnet: RESIDUAL_EXTRACT)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : C_CONNECTIVITY (Primitive 連結, 属性名 residual_id)
+// Input 1 : 状態ジオメトリ (building, cfg_*)
+// ---------------------------------------------------------------------
+// Residual = Domain - Union(Buildings) の各連結領域 (residual_id) の特徴量を
+// 計算し、その領域に属する全プリミティブに書き込む。
+// Boolean の結果は三角形分割・分割されていることがあるため、
+// 1 領域 = 複数プリミティブ を前提に集計する。
+//
+// プリミティブ属性 (領域単位で同じ値):
+//   f@region_area            面積
+//   f@region_perimeter       外周長 (穴の周囲を含む境界の総延長)
+//   v@region_centroid        重心 (面積重み)
+//   v@region_bbmin/bbmax     境界ボックス
+//   f@elongation             細長さ P^2 / (4πA)  (円=1、大きいほど細長い/複雑)
+//   f@bbox_aspect            境界ボックスの縦横比 (>=1)
+//   f@approx_width           概略幅 2A/P
+//   f@building_contact_ratio 境界のうち建築に接する長さの割合
+//   i@boundary_edge_count    境界辺の数
+//   i@ignored                1 = 面積 < minimum_building_area (候補生成しない)
+//   i@unfilled               0 (G03/H02 で更新)
+// detail:
+//   i@residual_count, i@residual_ignored_count,
+//   f@total_residual_area, f@max_residual_area, f[]@region_areas
+//
+// 注意: 頂点 1 点だけで接する 2 つの領域は、Connectivity では 1 領域と
+//       数えられる (点連結)。通行可能性の判定は Phase 3 / Path Explorer で行う。
+// =====================================================================
+
+float cr(vector a; vector b) { return a.x * b.y - a.y * b.x; }
+
+float base = detail(1, "cfg_base_size", 0);
+float minA = detail(1, "cfg_minimum_building_area", 0);
+float tol  = 1e-4 * base;
+
+int np = nprimitives(0);
+int nreg = 0;
+for (int p = 0; p < np; p++) nreg = max(nreg, prim(0, "residual_id", p) + 1);
+
+float  area[], perim[], contact[];
+vector csum[], bmin[], bmax[];
+int    nedge[];
+resize(area, nreg); resize(perim, nreg); resize(contact, nreg);
+resize(csum, nreg); resize(bmin, nreg);  resize(bmax, nreg); resize(nedge, nreg);
+for (int r = 0; r < nreg; r++) {
+    bmin[r] = set( 1e30,  1e30, 0.0);
+    bmax[r] = set(-1e30, -1e30, 0.0);
+}
+
+for (int p = 0; p < np; p++) {
+    int r = prim(0, "residual_id", p);
+    float a = primintrinsic(0, "measuredarea", p);
+
+    int pts[] = primpoints(0, p);
+    int n = len(pts);
+    vector P[];
+    foreach (int pt; pts) append(P, point(0, "P", pt));
+
+    // 多角形の重心 (shoelace)。符号は分子分母で相殺される
+    float a2 = 0.0; vector c = 0;
+    for (int i = 0; i < n; i++) {
+        float k = cr(P[i], P[(i + 1) % n]);
+        a2 += k;
+        c  += (P[i] + P[(i + 1) % n]) * k;
+    }
+    if (abs(a2) > 1e-12) c /= (3.0 * a2);
+    else { c = 0; foreach (vector q; P) c += q; c /= max(n, 1); }
+
+    area[r] += a;
+    csum[r] += c * a;
+    foreach (vector q; P) { bmin[r] = min(bmin[r], q); bmax[r] = max(bmax[r], q); }
+
+    // 境界辺 = 他のプリミティブと共有されていない half-edge
+    int h0 = primhedge(0, p);
+    int h  = h0;
+    int guard = 0;
+    while (h >= 0 && guard < 1000000) {
+        if (hedge_equivcount(0, h) == 1) {
+            vector A = point(0, "P", hedge_srcpoint(0, h));
+            vector B = point(0, "P", hedge_dstpoint(0, h));
+            float L = distance(A, B);
+            perim[r] += L;
+            nedge[r] += 1;
+            int bp; vector buv;
+            float d = xyzdist(1, "building", 0.5 * (A + B), bp, buv, 10.0 * tol);
+            if (bp >= 0 && d >= 0.0 && d <= 10.0 * tol) contact[r] += L;
+        }
+        h = hedge_next(0, h);
+        guard++;
+        if (h == h0) break;
+    }
+}
+
+float total = 0.0, amax = 0.0;
+int nign = 0;
+float region_areas[];
+for (int r = 0; r < nreg; r++) {
+    total += area[r];
+    amax = max(amax, area[r]);
+    append(region_areas, area[r]);
+    if (area[r] < minA) nign++;
+}
+
+addprimattrib(0, "region_area", 0.0);
+addprimattrib(0, "region_perimeter", 0.0);
+addprimattrib(0, "region_centroid", {0, 0, 0});
+addprimattrib(0, "region_bbmin", {0, 0, 0});
+addprimattrib(0, "region_bbmax", {0, 0, 0});
+addprimattrib(0, "elongation", 0.0);
+addprimattrib(0, "bbox_aspect", 0.0);
+addprimattrib(0, "approx_width", 0.0);
+addprimattrib(0, "building_contact_ratio", 0.0);
+addprimattrib(0, "boundary_edge_count", 0);
+addprimattrib(0, "ignored", 0);
+addprimattrib(0, "unfilled", 0);
+
+for (int p = 0; p < np; p++) {
+    int r = prim(0, "residual_id", p);
+    float A = area[r], L = max(perim[r], 1e-12);
+    vector sz = bmax[r] - bmin[r];
+    float smin = max(min(sz.x, sz.y), 1e-12);
+    setprimattrib(0, "region_area",            p, A);
+    setprimattrib(0, "region_perimeter",       p, perim[r]);
+    setprimattrib(0, "region_centroid",        p, (A > 0.0) ? csum[r] / A : 0.5 * (bmin[r] + bmax[r]));
+    setprimattrib(0, "region_bbmin",           p, bmin[r]);
+    setprimattrib(0, "region_bbmax",           p, bmax[r]);
+    setprimattrib(0, "elongation",             p, L * L / (4.0 * PI * max(A, 1e-12)));
+    setprimattrib(0, "bbox_aspect",            p, max(sz.x, sz.y) / smin);
+    setprimattrib(0, "approx_width",           p, 2.0 * A / L);
+    setprimattrib(0, "building_contact_ratio", p, contact[r] / L);
+    setprimattrib(0, "boundary_edge_count",    p, nedge[r]);
+    setprimattrib(0, "ignored",                p, (A < minA) ? 1 : 0);
+    setprimattrib(0, "unfilled",               p, 0);
+}
+
+i@residual_count         = nreg;
+i@residual_ignored_count = nign;
+f@total_residual_area    = total;
+f@max_residual_area      = amax;
+f[]@region_areas         = region_areas;

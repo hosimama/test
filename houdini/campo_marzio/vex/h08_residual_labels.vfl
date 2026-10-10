@@ -1,0 +1,43 @@
+// =====================================================================
+// H08_RESIDUAL_LABELS           (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : H02_FINAL_RESIDUAL_FLAG (最終残余)
+// Input 1 : H01_FINAL_STATS (cfg_* 参照用)
+// ---------------------------------------------------------------------
+// show_residual_ids=1 のとき、各残余領域の重心に 1 点を置き
+// i@residual_id / f@region_area / s@unfilled_reason を持たせる (group "residual_label")。
+// 入力のポリゴンは消し、ラベル点だけを出力する。
+// 文字として表示するには、ビューポートの Visualizer (Marker, Style=Text,
+// Attribute=residual_id) を使う。※ UI の場所はバージョンで確認すること。
+// =====================================================================
+int show = detail(1, "cfg_show_residual_ids", 0);
+
+int    seen[];
+vector cen[];
+int    rid[];
+float  ra[];
+string why[];
+for (int p = 0; p < nprimitives(0); p++) {
+    int r = prim(0, "residual_id", p);
+    if (find(seen, r) >= 0) continue;
+    append(seen, r);
+    append(cen, prim(0, "region_centroid", p));
+    append(rid, r);
+    append(ra, prim(0, "region_area", p));
+    append(why, prim(0, "unfilled_reason", p));
+}
+
+for (int p = 0; p < nprimitives(0); p++) removeprim(0, p, 0);
+for (int i = 0; i < npoints(0); i++)     removepoint(0, i);
+if (!show) return;
+
+addpointattrib(0, "residual_id", -1);
+addpointattrib(0, "region_area", 0.0);
+addpointattrib(0, "unfilled_reason", "");
+for (int k = 0; k < len(rid); k++) {
+    int pt = addpoint(0, cen[k]);
+    setpointattrib(0, "residual_id", pt, rid[k]);
+    setpointattrib(0, "region_area", pt, ra[k]);
+    setpointattrib(0, "unfilled_reason", pt, why[k]);
+    setpointgroup(0, "residual_label", pt, 1);
+}

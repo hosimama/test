@@ -1,0 +1,14 @@
+// =====================================================================
+// H04_OUT_CANDIDATES            (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : ITERATION_CONTROLLER の出力 (最終状態)
+// ---------------------------------------------------------------------
+// 最後に実行された反復の候補点だけを取り出す。
+// (keep_debug_in_loop=1 のときのみ状態に候補が含まれる)
+// 途中の反復の候補を見るには max_iterations を小さくして確認する。
+// 停止後の反復は状態を素通しするので、ここに残るのは
+// 「停止の原因になった反復」の候補である。
+// =====================================================================
+for (int p = 0; p < nprimitives(0); p++) removeprim(0, p, 0);
+for (int i = 0; i < npoints(0); i++)
+    if (!inpointgroup(0, "candidate", i)) removepoint(0, i);

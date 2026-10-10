@@ -1,0 +1,57 @@
+// =====================================================================
+// D01_SHAPE_LIBRARY             (subnet: SHAPE_LIBRARY)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : INPUT_DOMAIN の出力 (cfg_* 参照用)
+// ---------------------------------------------------------------------
+// 形状ライブラリのプレビュー/リファレンス。Phase 1 は Rectangle (0) のみ。
+// 原点基準で生成し、位置・回転・スケールは配置側 (E/G) で独立に与える。
+//
+// 形状規約 (E01/E02/F01/G02/H05 はこの規約で同じ式を使う):
+//   ローカル X = 角度 theta の方向、ローカル Y = その左 90°
+//   corner0 = c - ex*w/2 - ey*d/2,  corner1 = c + ex*w/2 - ey*d/2,
+//   corner2 = c + ex*w/2 + ey*d/2,  corner3 = c - ex*w/2 + ey*d/2
+//   width = base*scale*sqrt(aspect), depth = base*scale/sqrt(aspect)
+//
+// 1 = HalfCircle, 2 = Circle, 3 = CompoundRectangle,
+// 4 = RectangleWithSemicircle は Phase 2 で追加する (ここでは生成しない)。
+// =====================================================================
+for (int p = 0; p < nprimitives(0); p++) removeprim(0, p, 0);
+for (int i = 0; i < npoints(0); i++)     removepoint(0, i);
+
+float base = detail(0, "cfg_base_size", 0);
+float smin = detail(0, "cfg_min_scale", 0);
+float smax = detail(0, "cfg_max_scale", 0);
+float amax = detail(0, "cfg_max_aspect", 0);
+
+string w = detail(0, "cfg_shape_weights", 0);
+string tok[] = split(w);
+for (int k = 1; k < len(tok); k++)
+    if (atof(tok[k]) > 0.0)
+        warning("shape_weights[%d] > 0 ですが、Phase 1 では Rectangle 以外は未実装です。", k);
+
+addprimattrib(0, "shape_type", -1);
+addprimattrib(0, "scale", 0.0);
+addprimattrib(0, "aspect", 1.0);
+addprimattrib(0, "width", 0.0);
+addprimattrib(0, "depth", 0.0);
+
+// プレビュー: 最小/最大スケール x 縦横比 1 / max_aspect を横に並べる
+float scales[]  = array(smin, smax);
+float aspects[] = array(1.0, amax);
+float x = 0.0;
+foreach (float s; scales) foreach (float asp; aspects) {
+    float wd = base * s * sqrt(asp), dp = base * s / sqrt(asp);
+    vector c = set(x + 0.5 * wd, 0.0, 0.0);
+    int pts[];
+    append(pts, addpoint(0, c + set(-0.5 * wd, -0.5 * dp, 0)));
+    append(pts, addpoint(0, c + set( 0.5 * wd, -0.5 * dp, 0)));
+    append(pts, addpoint(0, c + set( 0.5 * wd,  0.5 * dp, 0)));
+    append(pts, addpoint(0, c + set(-0.5 * wd,  0.5 * dp, 0)));
+    int pr = addprim(0, "poly", pts);
+    setprimattrib(0, "shape_type", pr, 0);
+    setprimattrib(0, "scale",  pr, s);
+    setprimattrib(0, "aspect", pr, asp);
+    setprimattrib(0, "width",  pr, wd);
+    setprimattrib(0, "depth",  pr, dp);
+    x += wd + 0.25 * base;
+}

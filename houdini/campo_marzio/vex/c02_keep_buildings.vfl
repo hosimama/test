@@ -1,0 +1,9 @@
+// =====================================================================
+// C02_KEEP_BUILDINGS            (subnet: RESIDUAL_EXTRACT)
+// Attribute Wrangle  /  Run Over: Primitives
+// Input 0 : 状態ジオメトリ (domain + building)
+// ---------------------------------------------------------------------
+// 建築ポリゴンだけを残す。この後 PolyExtrude で厚みを付け、
+// Boolean の B 入力 (Solid) にする。
+// =====================================================================
+if (s@class != "building") removeprim(0, @primnum, 1);

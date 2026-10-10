@@ -1,0 +1,124 @@
+// =====================================================================
+// F01_CANDIDATE_SCORE           (subnet: CANDIDATE_SCORING)
+// Attribute Wrangle  /  Run Over: Points
+// Input 0 : E02_CANDIDATE_VALIDATE
+// Input 1 : 残余空間の境界線分
+// Input 2 : 残余空間ポリゴン
+// Input 3 : 状態ジオメトリ (building, cfg_*, recent_orient/recent_scale)
+// ---------------------------------------------------------------------
+// Score = (w_fill*Fill + w_fit*Fit + w_access*Access
+//          + w_variety*Variety + w_axis*Axis) / Σw      (各項 0..1)
+//
+// 周長サンプル: 図形の各辺に perimeter_samples 点を取り、
+//   残余境界までの距離 dist を測る。
+//     dist <= clearance + contact_tolerance           -> contact (接触)
+//     dist <  clearance + min_passage_width           -> sliver  (通れない隙間)
+//     それ以外                                         -> open
+//
+// Fill    : 面積 / min(領域面積, 最大候補面積)。
+//           広い領域では大きい図形ほど高く、狭い領域では領域をどれだけ埋めるか。
+// Fit     : contact の割合 = 図形の外周が既存の境界に実際に沿っている度合い
+//           (bbox ではなく残余ポリゴン境界との距離で評価)。
+// Access  : 1 - sliver の割合 (暫定)。通路ネットワーク解析は Path Explorer 側。
+//           sliver 割合 > max_sliver_ratio の候補は棄却 (reject_code 4)。
+// Variety : 直近 variety_window 棟との角度差・尺度差の平均 (乱数ではない)。
+// Axis    : axis_radius 内の最寄り建築の軸線をどれだけ継承するか。
+//           (Phase 1 は「継承」のみ。衝突モードは Phase 4)
+// =====================================================================
+
+float angdiff90(float a; float b) {
+    float x = abs(a - b) % 90.0;
+    return min(x, 90.0 - x);              // 0..45
+}
+
+if (i@reject_code != 0) { f@score = -1.0; return; }
+
+float base      = detail(3, "cfg_base_size", 0);
+float smin      = detail(3, "cfg_min_scale", 0);
+float smax      = detail(3, "cfg_max_scale", 0);
+float clearance = detail(3, "cfg_clearance", 0);
+float ctol      = detail(3, "cfg_contact_tolerance", 0);
+float passw     = detail(3, "cfg_min_passage_width", 0);
+float maxsl     = detail(3, "cfg_max_sliver_ratio", 0);
+int   m         = max(1, detail(3, "cfg_perimeter_samples", 0));
+float axis_r    = detail(3, "cfg_axis_radius", 0);
+float wf = detail(3, "cfg_weight_fill", 0);
+float wt = detail(3, "cfg_weight_fit", 0);
+float wa = detail(3, "cfg_weight_access", 0);
+float wv = detail(3, "cfg_weight_variety", 0);
+float wx = detail(3, "cfg_weight_axis", 0);
+float wsum = max(wf + wt + wa + wv + wx, 1e-9);
+
+float w = f@width, d = f@depth;
+float t = radians(f@theta);
+vector ex = set(cos(t), sin(t), 0.0);
+vector ey = set(-sin(t), cos(t), 0.0);
+vector C[];
+append(C, @P - ex * 0.5 * w - ey * 0.5 * d);
+append(C, @P + ex * 0.5 * w - ey * 0.5 * d);
+append(C, @P + ex * 0.5 * w + ey * 0.5 * d);
+append(C, @P - ex * 0.5 * w + ey * 0.5 * d);
+
+// ---- 周長サンプル --------------------------------------------------
+int ncontact = 0, nsliver = 0, ntotal = 0;
+float maxd = clearance + passw;
+for (int e = 0; e < 4; e++) {
+    for (int k = 0; k < m; k++) {
+        vector S = lerp(C[e], C[(e + 1) % 4], (k + 0.5) / m);
+        int sp; vector suv;
+        float dist = xyzdist(1, S, sp, suv, maxd);
+        ntotal++;
+        if (sp < 0 || dist < 0.0 || dist >= maxd) continue;   // open
+        if (dist <= clearance + ctol) ncontact++;
+        else                          nsliver++;
+    }
+}
+float fit_v    = float(ncontact) / ntotal;
+float sliver_r = float(nsliver)  / ntotal;
+float access_v = 1.0 - sliver_r;
+
+if (sliver_r > maxsl) {
+    i@reject_code   = 4;
+    s@reject_reason = "access_sliver";
+    f@score = -1.0;
+    f@score_fit = fit_v; f@score_access = access_v;
+    return;
+}
+
+// ---- Fill ---------------------------------------------------------
+float amaxc  = pow(base * smax, 2.0);
+float fill_v = clamp(w * d / max(min(f@region_area, amaxc), 1e-9), 0.0, 1.0);
+
+// ---- Variety ------------------------------------------------------
+float ro[] = detail(3, "recent_orient");
+float rs[] = detail(3, "recent_scale");
+float var_v = 1.0;
+if (len(ro) > 0) {
+    float lr = max(log(smax / smin), 1e-6);
+    float acc = 0.0;
+    for (int j = 0; j < len(ro); j++) {
+        float da = angdiff90(f@theta, ro[j]) / 45.0;
+        float ds = clamp(abs(log(f@scale / max(rs[j], 1e-9))) / lr, 0.0, 1.0);
+        acc += 0.5 * (da + ds);
+    }
+    var_v = acc / len(ro);
+}
+
+// ---- Axis ---------------------------------------------------------
+float axis_v = 0.5;                       // 近くに建築がなければ中立
+int bp; vector buv;
+float bd = xyzdist(3, "building", @P, bp, buv, axis_r);
+int nearest_bid = -1;
+if (bp >= 0 && bd >= 0.0 && bd <= axis_r) {
+    float o = prim(3, "orientation", bp);
+    axis_v = 1.0 - angdiff90(f@theta, o) / 45.0;
+    nearest_bid = prim(3, "building_id", bp);
+}
+
+f@score_fill    = fill_v;
+f@score_fit     = fit_v;
+f@score_access  = access_v;
+f@score_variety = var_v;
+f@score_axis    = axis_v;
+i@axis_ref_building = nearest_bid;
+f@score = (wf * fill_v + wt * fit_v + wa * access_v + wv * var_v + wx * axis_v) / wsum;

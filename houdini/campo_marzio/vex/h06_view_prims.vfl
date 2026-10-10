@@ -1,0 +1,53 @@
+// =====================================================================
+// H06_VIEW_PRIMS                (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Primitives
+// Input 0 : VIEW_MERGE (最終状態 + 最終残余 + 候補点 + top-k 輪郭)
+// Input 1 : H01_FINAL_STATS (cfg_* 参照用)
+// ---------------------------------------------------------------------
+// debug_mode に応じてプリミティブの色と表示/非表示を決める。
+//   0 Buildings        : 建築を building_id ごとの色、都市領域を薄灰
+//   1 Residual         : 残余を residual_id ごとの色 (too_small は赤)、建築は灰
+//   2 Candidates       : 建築・残余は灰、top-k 輪郭を表示 (候補点は H07)
+//   3 Score            : 建築を採用時スコア (青->赤)、初期建築は白
+//   4 Generation Index : 建築を generation (青->黄)
+// =====================================================================
+int mode = detail(1, "cfg_debug_mode", 0);
+string c = s@class;
+
+vector grey  = {0.35, 0.35, 0.35};
+vector light = {0.85, 0.85, 0.82};
+
+if (c == "domain") {
+    if (mode == 0) v@Cd = light;
+    else removeprim(0, @primnum, 1);       // 残余と重なって見づらいので隠す
+}
+else if (c == "building") {
+    if (mode == 0) {
+        v@Cd = hsvtorgb(set(random(i@building_id * 13.17 + 0.5), 0.45, 0.85));
+    }
+    else if (mode == 3) {
+        float s = f@score;
+        v@Cd = (s < 0.0) ? set(1.0, 1.0, 1.0) : hsvtorgb(set(lerp(0.66, 0.0, clamp(s, 0.0, 1.0)), 0.85, 0.95));
+    }
+    else if (mode == 4) {
+        int gmax = max(detail(1, "iter", 0), 1);
+        float g = clamp(float(i@generation) / gmax, 0.0, 1.0);
+        v@Cd = hsvtorgb(set(lerp(0.66, 0.16, g), 0.8, 0.95));
+    }
+    else v@Cd = grey;
+}
+else if (c == "residual") {
+    if (mode == 0 || mode == 3 || mode == 4) removeprim(0, @primnum, 1);
+    else if (mode == 1) {
+        if (i@unfilled_class == 0) v@Cd = set(0.85, 0.15, 0.15);
+        else v@Cd = hsvtorgb(set(random(i@residual_id * 7.31 + 0.2), 0.35, 1.0));
+    }
+    else v@Cd = set(0.92, 0.92, 0.88);
+}
+else if (c == "topk") {
+    if (mode != 2 && mode != 3) removeprim(0, @primnum, 1);
+    else v@Cd = (i@rank == 0) ? set(1.0, 0.1, 0.1) : set(1.0, 0.75, 0.0);
+}
+else {
+    removeprim(0, @primnum, 1);
+}

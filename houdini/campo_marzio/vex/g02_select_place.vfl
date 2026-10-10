@@ -1,0 +1,119 @@
+// =====================================================================
+// G02_SELECT_PLACE              (subnet: ITERATION_CONTROLLER)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : G01_CLEAR_TRANSIENT (状態: domain + building)
+// Input 1 : F01_CANDIDATE_SCORE (採点済み候補点)
+// ---------------------------------------------------------------------
+// 有効な候補 (reject_code == 0) のうちスコア最大のものを 1 つ採用し、
+// 建築ポリゴンとして状態に追加する。同点のときは cand_id の小さい方
+// (= 生成順が先のもの) を採るので、結果は決定的。
+// 有効な候補がなければ配置を強行せず i@placed = 0 とする。
+//
+// 追加される建築の属性:
+//   s@class="building", group "building", i@building_id, i@shape_type=0,
+//   f@orientation, f@scale, i@generation (= iter+1), f@width, f@depth,
+//   f@area, f@score, f@score_fill/fit/access/variety/axis,
+//   i@placed_residual_id, i@snapped, i@cand_id
+// detail:
+//   i@placed, i@placed_building_id, i@placed_residual_id, i@n_candidates,
+//   i@n_valid, i[]@reject_counts (index = reject_code), f@last_score,
+//   i[]@region_valid_count (residual_id ごとの有効候補数),
+//   f[]@recent_orient, f[]@recent_scale (更新)
+// =====================================================================
+
+int n = npoints(1);
+int counts[] = array(0, 0, 0, 0, 0, 0);
+int nreg = 0;
+for (int i = 0; i < n; i++) nreg = max(nreg, point(1, "residual_id", i) + 1);
+int rvalid[]; resize(rvalid, nreg);
+
+int   best   = -1;
+float bscore = -1e30;
+int   bcid   = 2147483647;
+for (int i = 0; i < n; i++) {
+    int code = point(1, "reject_code", i);
+    if (code >= 0 && code < 6) counts[code]++;
+    if (code != 0) continue;
+    int r = point(1, "residual_id", i);
+    if (r >= 0) rvalid[r]++;
+    float s   = point(1, "score", i);
+    int   cid = point(1, "cand_id", i);
+    if (s > bscore || (s == bscore && cid < bcid)) { best = i; bscore = s; bcid = cid; }
+}
+
+i@n_candidates          = n;
+i@n_valid               = counts[0];
+i[]@reject_counts       = counts;
+i[]@region_valid_count  = rvalid;
+i@placed                = 0;
+i@placed_building_id    = -1;
+i@placed_residual_id    = -1;
+f@last_score            = -1.0;
+
+if (best < 0) return;
+
+// ---- 採用候補を矩形ポリゴンにする -------------------------------------
+vector c  = point(1, "P", best);
+float  th = point(1, "theta", best);
+float  w  = point(1, "width", best);
+float  d  = point(1, "depth", best);
+float  t  = radians(th);
+vector ex = set(cos(t), sin(t), 0.0);
+vector ey = set(-sin(t), cos(t), 0.0);
+
+// XY 平面で反時計回り。巻き方向は残余抽出の結果に影響しない
+// (C03 で押し出し後に Z 中心を合わせるため)。
+int pts[];
+append(pts, addpoint(0, c - ex * 0.5 * w - ey * 0.5 * d));
+append(pts, addpoint(0, c + ex * 0.5 * w - ey * 0.5 * d));
+append(pts, addpoint(0, c + ex * 0.5 * w + ey * 0.5 * d));
+append(pts, addpoint(0, c - ex * 0.5 * w + ey * 0.5 * d));
+int pr = addprim(0, "poly", pts);
+
+int bid = i@next_building_id;
+int gen = i@iter + 1;
+
+addprimattrib(0, "score_fill", 0.0);
+addprimattrib(0, "score_fit", 0.0);
+addprimattrib(0, "score_access", 0.0);
+addprimattrib(0, "score_variety", 0.0);
+addprimattrib(0, "score_axis", 0.0);
+addprimattrib(0, "placed_residual_id", -1);
+addprimattrib(0, "snapped", 0);
+addprimattrib(0, "cand_id", -1);
+
+setprimattrib(0, "class",       pr, "building");
+setprimgroup (0, "building",    pr, 1);
+setprimattrib(0, "building_id", pr, bid);
+setprimattrib(0, "shape_type",  pr, point(1, "shape_type", best));
+setprimattrib(0, "orientation", pr, th);
+setprimattrib(0, "scale",       pr, point(1, "scale", best));
+setprimattrib(0, "generation",  pr, gen);
+setprimattrib(0, "width",       pr, w);
+setprimattrib(0, "depth",       pr, d);
+setprimattrib(0, "area",        pr, w * d);
+setprimattrib(0, "score",       pr, bscore);
+setprimattrib(0, "score_fill",    pr, point(1, "score_fill", best));
+setprimattrib(0, "score_fit",     pr, point(1, "score_fit", best));
+setprimattrib(0, "score_access",  pr, point(1, "score_access", best));
+setprimattrib(0, "score_variety", pr, point(1, "score_variety", best));
+setprimattrib(0, "score_axis",    pr, point(1, "score_axis", best));
+setprimattrib(0, "placed_residual_id", pr, point(1, "residual_id", best));
+setprimattrib(0, "snapped",     pr, point(1, "snapped", best));
+setprimattrib(0, "cand_id",     pr, bcid);
+
+i@next_building_id   = bid + 1;
+i@placed             = 1;
+i@placed_building_id = bid;
+i@placed_residual_id = point(1, "residual_id", best);
+f@last_score         = bscore;
+
+// ---- Variety 用の直近履歴を更新 --------------------------------------
+int K = max(1, i@cfg_variety_window);
+float ro[] = f[]@recent_orient;
+float rs[] = f[]@recent_scale;
+append(ro, th);
+append(rs, point(1, "scale", best));
+while (len(ro) > K) { removeindex(ro, 0); removeindex(rs, 0); }
+f[]@recent_orient = ro;
+f[]@recent_scale  = rs;

@@ -1,0 +1,8 @@
+// =====================================================================
+// C01_KEEP_DOMAIN               (subnet: RESIDUAL_EXTRACT)
+// Attribute Wrangle  /  Run Over: Primitives
+// Input 0 : 状態ジオメトリ (domain + building)
+// ---------------------------------------------------------------------
+// 都市領域ポリゴンだけを残す (Boolean の A 入力: Surface)。
+// =====================================================================
+if (s@class != "domain") removeprim(0, @primnum, 1);

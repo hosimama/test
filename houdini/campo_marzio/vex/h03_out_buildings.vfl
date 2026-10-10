@@ -1,0 +1,11 @@
+// =====================================================================
+// H03_OUT_BUILDINGS             (subnet: OUTPUT_AND_DEBUG)
+// Attribute Wrangle  /  Run Over: Detail (only once)
+// Input 0 : H01_FINAL_STATS (最終状態 + 検証結果)
+// ---------------------------------------------------------------------
+// 建築フットプリントだけを残す (detail 属性 = 充填率・反復回数・検証結果 は保持)。
+// =====================================================================
+for (int p = 0; p < nprimitives(0); p++)
+    if (prim(0, "class", p) != "building") removeprim(0, p, 1);
+int pts[] = expandpointgroup(0, "candidate");
+foreach (int pt; pts) removepoint(0, pt);
