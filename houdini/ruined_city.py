@@ -46,6 +46,14 @@ A) Houdini の Python Shell から
      パラメータとして書き換えられる。1語ずつ visited に足していくと、
      その時点で行ける範囲(reach)と通れる道が変わる。
 
+   カメラ = プレイヤー(Camera = Player タブ)
+     player_cam も一緒に作られる。カメラ連動を切り替えると visited を自動で作る。
+       path : カメラをアニメーションさせる。開始フレーム〜今のフレームの動き
+              = 訪問履歴。タイムラインを戻すと履歴も戻る。
+       walk : ビューポートで player_cam を選び、Lock Camera/Light to View で
+              歩き回る。近づいた場所が順に記録される(リセットボタンあり)。
+     どちらも、閉じたゲートの先の場所には近づいても訪問にならない。
+
 B) Houdini なしで確認
        python ruined_city.py --visited "archive tower" --svg out.svg
    1歩ずつの経過・ゲートの状態・構造(Tree か Loop か)を表示する。
@@ -277,6 +285,40 @@ def simulate(visited_text, current_text=""):
 
 
 # ---------------------------------------------------------------------------
+# カメラ = プレイヤー
+# ---------------------------------------------------------------------------
+def nearest_place(x, z, radius):
+    """(x, z) から radius 以内でいちばん近い場所。なければ None。"""
+    best, best_d = None, radius
+    for name, (px, pz, _, _) in PLACES.items():
+        d = math.hypot(px - x, pz - z)
+        if d <= best_d:
+            best, best_d = name, d
+    return best
+
+
+def visits_from_positions(positions, radius, visited=None):
+    """カメラ位置の列 [(x, z), ...] を順にたどり、訪問履歴を作る。
+    閉じたゲートの先の場所には、近づいても「訪問」にならない(壁抜け禁止)。"""
+    visited = list(visited or [])
+    log = []
+    here = visited[-1] if visited else START
+    blocked = None
+    for x, z in positions:
+        place = nearest_place(x, z, radius)
+        if place is None or place == here:
+            continue
+        if place in CityState(visited).reach(here):
+            visited.append(place)
+            here = place
+            blocked = None
+        elif place != blocked:
+            log.append("[x] %s -> %s : 道が閉じていて入れない" % (here, place))
+            blocked = place
+    return visited, log
+
+
+# ---------------------------------------------------------------------------
 # 視認性(Landmark)
 # ---------------------------------------------------------------------------
 def _seg_hits_box(p, q, box):
@@ -333,8 +375,9 @@ def path_color(state, reach, on_route):
     return COL_REACH if reach else COL_OPEN
 
 
-def build(visited_text=DEFAULT_VISITED, current_text=""):
+def build(visited_text=DEFAULT_VISITED, current_text="", extra_log=None):
     state, current, log = simulate(visited_text, current_text)
+    log = list(extra_log or []) + log
     reach = state.reach(current)
     route = state.route(current, GOAL)
     order = {}
@@ -483,6 +526,21 @@ def write_svg(path, places, paths, detail, scale=12.0, margin=40.0):
 # ---------------------------------------------------------------------------
 # Houdini
 # ---------------------------------------------------------------------------
+CAM_MODES = ("off", "path", "walk")
+
+
+def _camera_inputs(node):
+    """カメラ連動の設定を読む。パラメータが無い古いノードでは off。"""
+    mparm = node.parm("cam_mode")
+    if mparm is None:
+        return "off", None, 0.0, 0.0, 4.0
+    mode = mparm.evalAsString()
+    cam = node.parm("camera").eval()
+    # camx / camz はカメラの world 位置を参照する式。ここで評価することで
+    # 「カメラが動いたら再計算する」という依存関係ができる。
+    return mode, cam, node.parm("camx").eval(), node.parm("camz").eval(), node.parm("radius").eval()
+
+
 def cook_python_sop():
     import hou
 
@@ -490,7 +548,34 @@ def cook_python_sop():
     vparm, cparm = node.parm("visited"), node.parm("current")
     visited = vparm.eval() if vparm is not None else DEFAULT_VISITED
     current = cparm.eval() if cparm is not None else ""
-    places, paths, detail = build(visited, current)
+    extra = []
+
+    mode, cam, cx, cz, radius = _camera_inputs(node)
+    cam_node = hou.node(cam) if cam else None
+    if mode != "off" and cam_node is None:
+        extra.append("[!] カメラ %s が見つからない。visited パラメータを使う" % cam)
+    elif mode == "path":
+        # 開始フレームから今のフレームまでのカメラの動き = 訪問の履歴
+        start = int(hou.playbar.frameRange()[0])
+        now = int(math.floor(hou.frame()))
+        pos = []
+        for f in range(start, now + 1):
+            t = cam_node.worldTransformAtTime(hou.frameToTime(f)).extractTranslates()
+            pos.append((t[0], t[2]))
+        seq, extra = visits_from_positions(pos, radius)
+        visited = " ".join(seq)
+        current = nearest_place(cx, cz, radius) or ""
+    elif mode == "walk":
+        # Lock Camera to View で歩き回る。履歴はノードの userData に溜める。
+        seq = parse_visited(node.userData("walk_visited") or "")
+        seq, extra = visits_from_positions([(cx, cz)], radius, seq)
+        node.setUserData("walk_visited", " ".join(seq))
+        visited = " ".join(seq)
+        current = nearest_place(cx, cz, radius) or ""
+
+    places, paths, detail = build(visited, current, extra)
+    if mode != "off" and cam_node is not None:
+        detail["camera"] = "%s (%.1f, %.1f) %s" % (cam, cx, cz, current or "移動中")
     write_houdini(node.geometry(), places, paths, detail)
 
 
@@ -505,7 +590,8 @@ ruined_city.cook_python_sop()
 
 
 def install(parent_path="/obj", name="ruined_city"):
-    """Python Shell から呼ぶと、visited / current パラメータ付きの Python SOP を作る。"""
+    """Python Shell から呼ぶと、visited / current パラメータ付きの Python SOP と
+    プレイヤー役のカメラ player_cam を作る。"""
     import hou
 
     folder_path = os.path.dirname(os.path.abspath(__file__)).replace("\\", "/")
@@ -515,6 +601,14 @@ def install(parent_path="/obj", name="ruined_city"):
         child.destroy()
     py = geo.createNode("python", "city_state")
 
+    # プレイヤー役のカメラ(入口に立ち、+Z = 都市の奥を向く)
+    cam_path = parent_path.rstrip("/") + "/player_cam"
+    cam = hou.node(cam_path)
+    if cam is None:
+        cam = parent.createNode("cam", "player_cam")
+        cam.parmTuple("t").set((0.0, 1.6, -3.0))
+        cam.parmTuple("r").set((0.0, 180.0, 0.0))
+
     ptg = py.parmTemplateGroup()
     folder = hou.FolderParmTemplate("ctrl", "CTRL")
     folder.addParmTemplate(hou.StringParmTemplate(
@@ -522,7 +616,32 @@ def install(parent_path="/obj", name="ruined_city"):
     folder.addParmTemplate(hou.StringParmTemplate(
         "current", "current(空 = 最後の訪問先)", 1, default_value=("",)))
     ptg.append(folder)
+
+    cam_folder = hou.FolderParmTemplate("player", "Camera = Player")
+    cam_folder.addParmTemplate(hou.MenuParmTemplate(
+        "cam_mode", "カメラ連動", CAM_MODES,
+        menu_labels=("off(visited を手で書く)",
+                     "path(カメラのアニメーション = 履歴)",
+                     "walk(歩いた場所を記録)"),
+        default_value=0))
+    cam_folder.addParmTemplate(hou.StringParmTemplate(
+        "camera", "カメラ", 1, default_value=(cam_path,),
+        string_type=hou.stringParmType.NodeReference))
+    cam_folder.addParmTemplate(hou.FloatParmTemplate(
+        "radius", "到着とみなす距離", 1, default_value=(4.0,)))
+    cam_folder.addParmTemplate(hou.ButtonParmTemplate(
+        "reset_walk", "walk の履歴をリセット",
+        script_callback="kwargs['node'].setUserData('walk_visited', ''); "
+                        "kwargs['node'].cook(force=True)",
+        script_callback_language=hou.scriptLanguage.Python))
+    for axis in ("x", "z"):
+        cam_folder.addParmTemplate(hou.FloatParmTemplate(
+            "cam" + axis, "カメラ位置 " + axis.upper() + "(自動)", 1))
+    ptg.append(cam_folder)
     py.setParmTemplateGroup(ptg)
+    for axis in ("x", "z"):
+        py.parm("cam" + axis).setExpression(
+            'origin("/obj", chs("camera"), "T%s")' % axis.upper())
     py.parm("python").set(LOADER_CODE % folder_path)
     py.setDisplayFlag(True)
     py.setRenderFlag(True)
